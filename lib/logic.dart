@@ -2,15 +2,24 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
-    as di;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const double kLogicalSize = 360.0;
-const String kLang = 'zh-Hant';
+const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
+const String kDbFile = 'tocfl_vocab_clean.db';
+const String kTable = 'vocab_clean';
+final kVisionChannel = MethodChannel('tocfl/vision');
 
-// ── Models ───────────────────────────────────────────────────────────────────
+// ── Stroke / Canvas models ────────────────────────────────────────────────────
 
 class StrokePoint {
   final double x, y;
@@ -38,10 +47,13 @@ class CanvasData {
   bool get hasStrokes => strokes.isNotEmpty || active != null;
   bool get canUndo => strokes.isNotEmpty;
 
+  static double _c(double v) => v.clamp(0.0, kLogicalSize);
+  static int _now() => DateTime.now().millisecondsSinceEpoch;
+
   CanvasData startStroke(double x, double y) => CanvasData(
         strokes: strokes,
         redo: [],
-        active: StrokeData([StrokePoint(x, y, _now())]),
+        active: StrokeData([StrokePoint(_c(x), _c(y), _now())]),
       );
 
   CanvasData addPoint(double x, double y) {
@@ -49,13 +61,15 @@ class CanvasData {
     return CanvasData(
       strokes: strokes,
       redo: redo,
-      active: StrokeData([...active!.points, StrokePoint(x, y, _now())]),
+      active:
+          StrokeData([...active!.points, StrokePoint(_c(x), _c(y), _now())]),
     );
   }
 
   CanvasData endStroke() {
-    if (active == null || active!.isEmpty)
+    if (active == null || active!.isEmpty) {
       return CanvasData(strokes: strokes, redo: redo);
+    }
     return CanvasData(strokes: [...strokes, active!], redo: redo);
   }
 
@@ -68,114 +82,159 @@ class CanvasData {
   }
 
   CanvasData clear() => const CanvasData();
-
-  static int _now() => DateTime.now().millisecondsSinceEpoch;
 }
 
-class RecCandidate {
-  final String text;
-  final double? score;
-  const RecCandidate(this.text, this.score);
+// ── Vocab model ───────────────────────────────────────────────────────────────
+
+class VocabEntry {
+  final String vocabulary;
+  final String? pinyin;
+  final String? levelCode;
+  final String? context;
+  final String? partOfSpeech;
+  final String? bopomofo;
+  final String? variantGroup;
+
+  const VocabEntry({
+    required this.vocabulary,
+    this.pinyin,
+    this.levelCode,
+    this.context,
+    this.partOfSpeech,
+    this.bopomofo,
+    this.variantGroup,
+  });
+
+  factory VocabEntry.fromMap(Map<String, dynamic> m) => VocabEntry(
+        vocabulary: m['vocabulary'] as String,
+        pinyin: m['pinyin'] as String?,
+        levelCode: m['level_code'] as String?,
+        context: m['context'] as String?,
+        partOfSpeech: m['part_of_speech'] as String?,
+        bopomofo: m['bopomofo'] as String?,
+        variantGroup: m['variant_group'] as String?,
+      );
 }
 
 class RecResult {
-  final List<RecCandidate> candidates;
+  final List<VocabEntry> matches;
+  final List<String> raw;
   final String? error;
-  const RecResult({this.candidates = const [], this.error});
+  const RecResult({this.matches = const [], this.raw = const [], this.error});
 }
 
-// ── Recognition service ───────────────────────────────────────────────────────
+// ── DB Service ────────────────────────────────────────────────────────────────
 
-class RecService {
-  final _mgr = di.DigitalInkRecognizerModelManager();
-  di.DigitalInkRecognizer? _rec;
+class DbService {
+  static Database? _db;
 
-  bool get _supported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-
-  Future<bool> isReady() async {
-    if (!_supported) return false;
+  static Future<void> init() async {
+    if (_db != null) return;
+    Directory dir;
     try {
-      return await _mgr.isModelDownloaded(kLang);
+      dir = await getApplicationDocumentsDirectory();
     } catch (_) {
-      return false;
+      dir = await getTemporaryDirectory();
     }
+    final path = p.join(dir.path, kDbFile);
+    if (!File(path).existsSync()) {
+      final data = await rootBundle.load(kDbAsset);
+      final bytes = Uint8List.fromList(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes));
+      await File(path).writeAsBytes(bytes, flush: true);
+    }
+    _db = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: true),
+    );
   }
 
-  Future<void> download() async {
-    if (!_supported) throw Exception('Only Android/iOS supported');
-    if (await isReady()) return;
-    await _mgr.downloadModel(kLang);
+  static Database get db => _db!;
+
+  static Future<List<VocabEntry>> findByChars(List<String> chars) async {
+    if (chars.isEmpty) return [];
+    final placeholders = chars.map((_) => '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT * FROM $kTable WHERE vocabulary IN ($placeholders) LIMIT 20',
+      chars,
+    );
+    return rows.map(VocabEntry.fromMap).toList();
   }
+}
 
-  Future<RecResult> recognize(List<StrokeData> strokes) async {
-    if (!_supported) {
-      return const RecResult(error: 'Android/iOS only');
-    }
-    if (strokes.isEmpty) return const RecResult(error: 'Canvas empty');
+// ── Render canvas → PNG ───────────────────────────────────────────────────────
 
-    try {
-      _rec ??= di.DigitalInkRecognizer(languageCode: kLang);
+Future<Uint8List> renderStrokes(List<StrokeData> strokes) async {
+  const int sz = 480;
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  final scale = sz / kLogicalSize;
 
-      final ink = di.Ink();
-      ink.strokes = strokes.where((s) => s.points.isNotEmpty).map((s) {
-        final ms = di.Stroke();
-        ms.points = s.points
-            .map((p) => di.StrokePoint(x: p.x, y: p.y, t: p.t))
-            .toList();
-        return ms;
-      }).toList();
+  canvas.drawRect(
+    Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()),
+    Paint()..color = Colors.black,
+  );
 
-      final ctx = di.DigitalInkRecognitionContext(
-        writingArea: di.WritingArea(width: kLogicalSize, height: kLogicalSize),
+  final ink = Paint()
+    ..color = Colors.white
+    ..strokeWidth = 12 * scale
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..style = PaintingStyle.stroke;
+
+  for (final s in strokes) {
+    if (s.points.isEmpty) continue;
+    if (s.points.length == 1) {
+      canvas.drawCircle(
+        Offset(s.points.first.x * scale, s.points.first.y * scale),
+        6 * scale,
+        ink,
       );
-
-      final res = await _rec!.recognize(ink, context: ctx);
-      return RecResult(
-        candidates: res.map((e) => RecCandidate(e.text, e.score)).toList(),
-      );
-    } catch (e) {
-      return RecResult(error: e.toString());
+      continue;
     }
+    final path = Path()
+      ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
+    for (final pt in s.points.skip(1)) {
+      path.lineTo(pt.x * scale, pt.y * scale);
+    }
+    canvas.drawPath(path, ink);
   }
 
-  Future<void> dispose() async {
-    try {
-      await _rec?.close();
-    } catch (_) {}
-    _rec = null;
-  }
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(sz, sz);
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  return byteData!.buffer.asUint8List();
 }
 
 // ── App State ─────────────────────────────────────────────────────────────────
 
 class AppState extends ChangeNotifier {
-  final _svc = RecService();
-
   bool _ready = false;
   String? _initError;
-  bool _modelReady = false;
-  bool _modelDownloading = false;
   bool _busy = false;
   CanvasData _canvas = const CanvasData();
   RecResult? _result;
 
   bool get ready => _ready;
   String? get initError => _initError;
-  bool get modelReady => _modelReady;
-  bool get modelDownloading => _modelDownloading;
   bool get busy => _busy;
   CanvasData get canvas => _canvas;
   RecResult? get result => _result;
-
-  bool get canCheck =>
-      _canvas.strokes.isNotEmpty && _modelReady && !_busy && !_modelDownloading;
+  bool get canCheck => _canvas.strokes.isNotEmpty && !_busy;
 
   Future<void> init() async {
+    try {
+      await DbService.init();
+    } catch (e, st) {
+      debugPrint('[AppState] init error: $e\n$st');
+      _initError = e.toString();
+      _ready = true;
+      notifyListeners();
+      return;
+    }
     _ready = true;
     notifyListeners();
   }
-
-  // ── Canvas ──
 
   void strokeStart(double x, double y) {
     _canvas = _canvas.startStroke(x, y);
@@ -204,43 +263,41 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Model ──
-
-  Future<void> downloadModel() async {
-    if (_modelDownloading) return;
-    _modelDownloading = true;
-    notifyListeners();
-    try {
-      await _svc.download();
-      _modelReady = await _svc.isReady();
-    } catch (e) {
-      _result = RecResult(error: e.toString());
-    } finally {
-      _modelDownloading = false;
-      notifyListeners();
-    }
-  }
-
-  // ── Recognize ──
-
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
     _busy = true;
     _result = null;
     notifyListeners();
+
     try {
-      _result = await _svc.recognize(_canvas.strokes);
+      final imgBytes = await renderStrokes(_canvas.strokes);
+
+      final List<dynamic> raw = await kVisionChannel.invokeMethod('recognize', {
+        'image': imgBytes,
+      });
+
+      final rawStrings = raw.cast<String>();
+
+      // Extract chars + full words to lookup
+      final lookup = <String>{};
+      for (final s in rawStrings) {
+        final trimmed = s.trim();
+        if (trimmed.isEmpty) continue;
+        lookup.add(trimmed);
+        for (int i = 0; i < trimmed.length; i++) {
+          final ch = trimmed[i];
+          if (ch.trim().isNotEmpty) lookup.add(ch);
+        }
+      }
+
+      final matches = await DbService.findByChars(lookup.toList());
+      _result = RecResult(matches: matches, raw: rawStrings);
     } catch (e) {
+      debugPrint('[recognize] $e');
       _result = RecResult(error: e.toString());
     } finally {
       _busy = false;
       notifyListeners();
     }
-  }
-
-  @override
-  void dispose() {
-    _svc.dispose();
-    super.dispose();
   }
 }
