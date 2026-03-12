@@ -186,14 +186,14 @@ class HwrService {
 
     final opts = InterpreterOptions()..threads = 2;
 
-    if (!kIsWeb && Platform.isIOS) {
-      try {
-        opts.addDelegate(CoreMlDelegate());
-        debugPrint('[HwrService] CoreML delegate enabled');
-      } catch (e) {
-        debugPrint('[HwrService] CoreML unavailable, CPU fallback: $e');
-      }
-    }
+    // if (!kIsWeb && Platform.isIOS) {
+    //   try {
+    //     opts.addDelegate(CoreMlDelegate());
+    //     debugPrint('[HwrService] CoreML delegate enabled');
+    //   } catch (e) {
+    //     debugPrint('[HwrService] CoreML unavailable, CPU fallback: $e');
+    //   }
+    // }
 
     _interp = await Interpreter.fromAsset(kModelAsset, options: opts);
 
