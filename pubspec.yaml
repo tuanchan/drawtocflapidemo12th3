@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
 
+  url_launcher: ^6.2.6
   # SQLite database
   sqflite: ^2.3.3+1
   sqflite_common_ffi: ^2.3.3
@@ -23,7 +24,6 @@ dependencies:
   shared_preferences: ^2.2.3
 
   # Offline handwriting recognition (Google ML Kit Digital Ink)
-  google_mlkit_digital_ink_recognition: ^0.14.2
 
 dev_dependencies:
   flutter_test:

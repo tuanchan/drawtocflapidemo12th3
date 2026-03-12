@@ -11,15 +11,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 const double kLogicalSize = 360.0;
 const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
 const String kDbFile = 'tocfl_vocab_clean.db';
 const String kTable = 'vocab_clean';
 final kVisionChannel = MethodChannel('tocfl/vision');
 
-// ── Stroke / Canvas models ────────────────────────────────────────────────────
+// ── Stroke / Canvas ───────────────────────────────────────────────────────────
 
 class StrokePoint {
   final double x, y;
@@ -38,11 +36,8 @@ class CanvasData {
   final List<StrokeData> redo;
   final StrokeData? active;
 
-  const CanvasData({
-    this.strokes = const [],
-    this.redo = const [],
-    this.active,
-  });
+  const CanvasData(
+      {this.strokes = const [], this.redo = const [], this.active});
 
   bool get hasStrokes => strokes.isNotEmpty || active != null;
   bool get canUndo => strokes.isNotEmpty;
@@ -67,9 +62,8 @@ class CanvasData {
   }
 
   CanvasData endStroke() {
-    if (active == null || active!.isEmpty) {
+    if (active == null || active!.isEmpty)
       return CanvasData(strokes: strokes, redo: redo);
-    }
     return CanvasData(strokes: [...strokes, active!], redo: redo);
   }
 
@@ -143,20 +137,26 @@ class DbService {
           data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes));
       await File(path).writeAsBytes(bytes, flush: true);
     }
-    _db = await databaseFactory.openDatabase(
-      path,
-      options: OpenDatabaseOptions(readOnly: true),
-    );
+    _db = await databaseFactory.openDatabase(path,
+        options: OpenDatabaseOptions(readOnly: true));
   }
 
   static Database get db => _db!;
 
   static Future<List<VocabEntry>> findByChars(List<String> chars) async {
     if (chars.isEmpty) return [];
-    final placeholders = chars.map((_) => '?').join(',');
+    final ph = chars.map((_) => '?').join(',');
     final rows = await db.rawQuery(
-      'SELECT * FROM $kTable WHERE vocabulary IN ($placeholders) LIMIT 20',
-      chars,
+        'SELECT * FROM $kTable WHERE vocabulary IN ($ph) LIMIT 20', chars);
+    return rows.map(VocabEntry.fromMap).toList();
+  }
+
+  /// Search by pinyin prefix OR vocabulary LIKE — returns up to 20 suggestions
+  static Future<List<VocabEntry>> search(String q) async {
+    if (q.trim().isEmpty) return [];
+    final rows = await db.rawQuery(
+      'SELECT * FROM $kTable WHERE vocabulary LIKE ? OR pinyin LIKE ? LIMIT 20',
+      ['%$q%', '%$q%'],
     );
     return rows.map(VocabEntry.fromMap).toList();
   }
@@ -186,17 +186,14 @@ Future<Uint8List> renderStrokes(List<StrokeData> strokes) async {
     if (s.points.isEmpty) continue;
     if (s.points.length == 1) {
       canvas.drawCircle(
-        Offset(s.points.first.x * scale, s.points.first.y * scale),
-        6 * scale,
-        ink,
-      );
+          Offset(s.points.first.x * scale, s.points.first.y * scale),
+          6 * scale,
+          ink);
       continue;
     }
     final path = Path()
       ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
-    for (final pt in s.points.skip(1)) {
-      path.lineTo(pt.x * scale, pt.y * scale);
-    }
+    for (final pt in s.points.skip(1)) path.lineTo(pt.x * scale, pt.y * scale);
     canvas.drawPath(path, ink);
   }
 
@@ -215,12 +212,22 @@ class AppState extends ChangeNotifier {
   CanvasData _canvas = const CanvasData();
   RecResult? _result;
 
+  // ── Search state ──
+  String _searchQuery = '';
+  List<VocabEntry> _searchSuggestions = [];
+  VocabEntry?
+      _pinnedEntry; // entry selected from search → shown as hint on canvas
+  Timer? _searchDebounce;
+
   bool get ready => _ready;
   String? get initError => _initError;
   bool get busy => _busy;
   CanvasData get canvas => _canvas;
   RecResult? get result => _result;
   bool get canCheck => _canvas.strokes.isNotEmpty && !_busy;
+  String get searchQuery => _searchQuery;
+  List<VocabEntry> get searchSuggestions => _searchSuggestions;
+  VocabEntry? get pinnedEntry => _pinnedEntry;
 
   Future<void> init() async {
     try {
@@ -235,6 +242,8 @@ class AppState extends ChangeNotifier {
     _ready = true;
     notifyListeners();
   }
+
+  // ── Canvas ──
 
   void strokeStart(double x, double y) {
     _canvas = _canvas.startStroke(x, y);
@@ -263,6 +272,38 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Search ──
+
+  void setSearchQuery(String q) {
+    _searchQuery = q;
+    _searchDebounce?.cancel();
+    if (q.trim().isEmpty) {
+      _searchSuggestions = [];
+      notifyListeners();
+      return;
+    }
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () async {
+      final results = await DbService.search(q);
+      _searchSuggestions = results;
+      notifyListeners();
+    });
+  }
+
+  void selectSuggestion(VocabEntry entry) {
+    _pinnedEntry = entry;
+    _searchQuery = '';
+    _searchSuggestions = [];
+    notifyListeners();
+  }
+
+  /// Reset pinned entry (clear gợi ý)
+  void resetPinned() {
+    _pinnedEntry = null;
+    notifyListeners();
+  }
+
+  // ── Recognize ──
+
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
     _busy = true;
@@ -271,14 +312,10 @@ class AppState extends ChangeNotifier {
 
     try {
       final imgBytes = await renderStrokes(_canvas.strokes);
-
       final List<dynamic> raw = await kVisionChannel.invokeMethod('recognize', {
         'image': imgBytes,
       });
-
       final rawStrings = raw.cast<String>();
-
-      // Extract chars + full words to lookup
       final lookup = <String>{};
       for (final s in rawStrings) {
         final trimmed = s.trim();
@@ -289,7 +326,6 @@ class AppState extends ChangeNotifier {
           if (ch.trim().isNotEmpty) lookup.add(ch);
         }
       }
-
       final matches = await DbService.findByChars(lookup.toList());
       _result = RecResult(matches: matches, raw: rawStrings);
     } catch (e) {
@@ -299,5 +335,11 @@ class AppState extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
   }
 }
