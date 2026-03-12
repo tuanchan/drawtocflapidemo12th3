@@ -141,8 +141,8 @@ class _DrawCanvas extends StatelessWidget {
               onPanCancel: () => context.read<AppState>().strokeEnd(),
               child: CustomPaint(
                 size: Size(sz, sz),
-                painter:
-                    _CanvasPainter(state.canvas, state.pinnedEntry?.vocabulary),
+                painter: _CanvasPainter(state.canvas,
+                    state.pinnedEntry?.vocabulary, state.strokeWidth),
               ),
             ),
           ),
@@ -154,9 +154,10 @@ class _DrawCanvas extends StatelessWidget {
 
 class _CanvasPainter extends CustomPainter {
   final CanvasData canvas;
-  final String? hint; // pinned entry shown as watermark
+  final String? hint;
+  final double strokeWidth;
 
-  _CanvasPainter(this.canvas, this.hint);
+  _CanvasPainter(this.canvas, this.hint, this.strokeWidth);
 
   @override
   void paint(Canvas c, Size sz) {
@@ -205,7 +206,7 @@ class _CanvasPainter extends CustomPainter {
     // strokes
     final ink = Paint()
       ..color = kAccent
-      ..strokeWidth = 10 * scale
+      ..strokeWidth = strokeWidth * scale
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
@@ -230,7 +231,9 @@ class _CanvasPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CanvasPainter old) =>
-      old.canvas != canvas || old.hint != hint;
+      old.canvas != canvas ||
+      old.hint != hint ||
+      old.strokeWidth != strokeWidth;
 }
 
 class _CanvasControls extends StatelessWidget {
@@ -238,24 +241,51 @@ class _CanvasControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        _Btn(
-            label: 'undo',
-            enabled: state.canvas.canUndo,
-            onTap: () => context.read<AppState>().undo()),
-        const SizedBox(width: 8),
-        _Btn(
-            label: 'clear',
-            enabled: state.canvas.hasStrokes,
-            onTap: () => context.read<AppState>().clear()),
-        const SizedBox(width: 8),
-        _Btn(
-          label: state.busy ? '…' : 'check',
-          enabled: state.canCheck,
-          accent: true,
-          onTap: () => context.read<AppState>().recognize(),
-        ),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      child: Column(children: [
+        // Slider độ dầy
+        Row(children: [
+          const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: kAccent.withOpacity(0.6),
+                inactiveTrackColor: kBorder,
+                thumbColor: kAccent,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                trackHeight: 1.5,
+                overlayShape: SliderComponentShape.noOverlay,
+              ),
+              child: Slider(
+                value: state.strokeWidth,
+                min: 4.0,
+                max: 24.0,
+                onChanged: (v) => context.read<AppState>().setStrokeWidth(v),
+              ),
+            ),
+          ),
+          const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
+        ]),
+        const SizedBox(height: 4),
+        // Buttons
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          _Btn(
+              label: 'undo',
+              enabled: state.canvas.canUndo,
+              onTap: () => context.read<AppState>().undo()),
+          const SizedBox(width: 8),
+          _Btn(
+              label: 'clear',
+              enabled: state.canvas.hasStrokes,
+              onTap: () => context.read<AppState>().clear()),
+          const SizedBox(width: 8),
+          _Btn(
+            label: state.busy ? '…' : 'check',
+            enabled: state.canCheck,
+            accent: true,
+            onTap: () => context.read<AppState>().recognize(),
+          ),
+        ]),
       ]),
     );
   }

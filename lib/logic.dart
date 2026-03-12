@@ -1,21 +1,30 @@
 // logic.dart
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const double kLogicalSize = 360.0;
 const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
 const String kDbFile = 'tocfl_vocab_clean.db';
 const String kTable = 'vocab_clean';
-final kVisionChannel = MethodChannel('tocfl/vision');
+const String kModelAsset = 'assets/ml/handwriting.tflite';
+const String kLabelsAsset = 'assets/ml/labels.json';
+const int kModelInputSize = 64; // phải khớp IMG_SIZE lúc train
+const int kTopK = 15; // top-K candidates → filter qua DB
 
 // ── Stroke / Canvas ───────────────────────────────────────────────────────────
 
@@ -151,7 +160,6 @@ class DbService {
     return rows.map(VocabEntry.fromMap).toList();
   }
 
-  /// Search by pinyin prefix OR vocabulary LIKE — returns up to 20 suggestions
   static Future<List<VocabEntry>> search(String q) async {
     if (q.trim().isEmpty) return [];
     final rows = await db.rawQuery(
@@ -162,45 +170,137 @@ class DbService {
   }
 }
 
-// ── Render canvas → PNG ───────────────────────────────────────────────────────
+// ── TFLite Recognizer ─────────────────────────────────────────────────────────
 
-Future<Uint8List> renderStrokes(List<StrokeData> strokes) async {
-  const int sz = 480;
-  final recorder = ui.PictureRecorder();
-  final canvas = Canvas(recorder);
-  final scale = sz / kLogicalSize;
+class HwrService {
+  static Interpreter? _interp;
+  static List<String> _labels = [];
+  static bool _ready = false;
 
-  canvas.drawRect(
-    Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()),
-    Paint()..color = Colors.black,
-  );
+  static Future<void> init() async {
+    if (_ready) return;
 
-  final ink = Paint()
-    ..color = Colors.white
-    ..strokeWidth = 12 * scale
-    ..strokeCap = StrokeCap.round
-    ..strokeJoin = StrokeJoin.round
-    ..style = PaintingStyle.stroke;
+    final raw = await rootBundle.loadString(kLabelsAsset);
+    _labels = List<String>.from(jsonDecode(raw) as List);
+    debugPrint('[HwrService] ${_labels.length} classes loaded');
 
-  for (final s in strokes) {
-    if (s.points.isEmpty) continue;
-    if (s.points.length == 1) {
-      canvas.drawCircle(
-          Offset(s.points.first.x * scale, s.points.first.y * scale),
-          6 * scale,
-          ink);
-      continue;
+    final opts = InterpreterOptions()..threads = 2;
+
+    if (!kIsWeb && Platform.isIOS) {
+      try {
+        opts.addDelegate(CoreMlDelegate());
+        debugPrint('[HwrService] CoreML delegate enabled');
+      } catch (e) {
+        debugPrint('[HwrService] CoreML unavailable, CPU fallback: $e');
+      }
     }
-    final path = Path()
-      ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
-    for (final pt in s.points.skip(1)) path.lineTo(pt.x * scale, pt.y * scale);
-    canvas.drawPath(path, ink);
+
+    _interp = await Interpreter.fromAsset(kModelAsset, options: opts);
+
+    // Sanity check shapes
+    final inShape = _interp!.getInputTensor(0).shape;
+    final outShape = _interp!.getOutputTensor(0).shape;
+    debugPrint('[HwrService] input:$inShape output:$outShape');
+
+    _ready = true;
   }
 
-  final picture = recorder.endRecording();
-  final image = await picture.toImage(sz, sz);
-  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-  return byteData!.buffer.asUint8List();
+  static Future<List<String>> recognize(List<StrokeData> strokes,
+      {int topK = kTopK, double strokeWidth = 10.0}) async {
+    assert(_ready, 'HwrService.init() chưa được gọi');
+    if (strokes.isEmpty) return [];
+
+    final input = await _prepareInput(strokes, strokeWidth: strokeWidth);
+    final output = [List<double>.filled(_labels.length, 0.0)];
+
+    _interp!.run(input, output);
+
+    final scores = output[0];
+    final indexed = List.generate(scores.length, (i) => MapEntry(i, scores[i]));
+    indexed.sort((a, b) => b.value.compareTo(a.value));
+
+    final result = indexed
+        .take(topK)
+        .map((e) => _labels[e.key])
+        .where((ch) => ch.isNotEmpty && ch != '?')
+        .toList();
+
+    debugPrint('[HwrService] top5: ${result.take(5).join(" ")}');
+    return result;
+  }
+
+  /// Render strokes → [1][64][64][1] float32
+  static Future<List> _prepareInput(List<StrokeData> strokes,
+      {double strokeWidth = 10.0}) async {
+    const int renderSz = 256;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final scale = renderSz / kLogicalSize;
+
+    // Nền trắng chữ đen — khớp với dataset AI-FREE-Team
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, renderSz.toDouble(), renderSz.toDouble()),
+      Paint()..color = Colors.white,
+    );
+
+    final ink = Paint()
+      ..color = Colors.black
+      ..strokeWidth = strokeWidth * scale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    for (final s in strokes) {
+      if (s.points.isEmpty) continue;
+      if (s.points.length == 1) {
+        canvas.drawCircle(
+            Offset(s.points.first.x * scale, s.points.first.y * scale),
+            7 * scale,
+            ink);
+        continue;
+      }
+      final path = Path()
+        ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
+      for (final pt in s.points.skip(1))
+        path.lineTo(pt.x * scale, pt.y * scale);
+      canvas.drawPath(path, ink);
+    }
+
+    final picture = recorder.endRecording();
+    final uiImage = await picture.toImage(renderSz, renderSz);
+    final byteData =
+        await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final rgba = byteData!.buffer.asUint8List();
+
+    // RGBA → grayscale → resize 64×64
+    final srcImg = img.Image.fromBytes(
+      width: renderSz,
+      height: renderSz,
+      bytes: rgba.buffer,
+      format: img.Format.uint8,
+      numChannels: 4,
+    );
+    final resized = img.copyResize(
+      img.grayscale(srcImg),
+      width: kModelInputSize,
+      height: kModelInputSize,
+      interpolation: img.Interpolation.average,
+    );
+
+    // → [1][64][64][1] float32
+    return List.generate(
+        1,
+        (_) => List.generate(
+            kModelInputSize,
+            (y) => List.generate(
+                kModelInputSize, (x) => [resized.getPixel(x, y).r / 255.0])));
+  }
+
+  static void close() {
+    _interp?.close();
+    _interp = null;
+    _ready = false;
+  }
 }
 
 // ── App State ─────────────────────────────────────────────────────────────────
@@ -211,12 +311,16 @@ class AppState extends ChangeNotifier {
   bool _busy = false;
   CanvasData _canvas = const CanvasData();
   RecResult? _result;
+  double _strokeWidth = 10.0; // logical units
+  double get strokeWidth => _strokeWidth;
+  void setStrokeWidth(double v) {
+    _strokeWidth = v.clamp(4.0, 24.0);
+    notifyListeners();
+  }
 
-  // ── Search state ──
   String _searchQuery = '';
   List<VocabEntry> _searchSuggestions = [];
-  VocabEntry?
-      _pinnedEntry; // entry selected from search → shown as hint on canvas
+  VocabEntry? _pinnedEntry;
   Timer? _searchDebounce;
 
   bool get ready => _ready;
@@ -231,7 +335,10 @@ class AppState extends ChangeNotifier {
 
   Future<void> init() async {
     try {
-      await DbService.init();
+      await Future.wait([
+        DbService.init(),
+        HwrService.init(),
+      ]);
     } catch (e, st) {
       debugPrint('[AppState] init error: $e\n$st');
       _initError = e.toString();
@@ -242,8 +349,6 @@ class AppState extends ChangeNotifier {
     _ready = true;
     notifyListeners();
   }
-
-  // ── Canvas ──
 
   void strokeStart(double x, double y) {
     _canvas = _canvas.startStroke(x, y);
@@ -272,8 +377,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Search ──
-
   void setSearchQuery(String q) {
     _searchQuery = q;
     _searchDebounce?.cancel();
@@ -296,13 +399,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Reset pinned entry (clear gợi ý)
   void resetPinned() {
     _pinnedEntry = null;
     notifyListeners();
   }
-
-  // ── Recognize ──
 
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
@@ -311,23 +411,20 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final imgBytes = await renderStrokes(_canvas.strokes);
-      final List<dynamic> raw = await kVisionChannel.invokeMethod('recognize', {
-        'image': imgBytes,
-      });
-      final rawStrings = raw.cast<String>();
+      final topChars = await HwrService.recognize(_canvas.strokes,
+          strokeWidth: _strokeWidth);
+
       final lookup = <String>{};
-      for (final s in rawStrings) {
-        final trimmed = s.trim();
-        if (trimmed.isEmpty) continue;
-        lookup.add(trimmed);
-        for (int i = 0; i < trimmed.length; i++) {
-          final ch = trimmed[i];
-          if (ch.trim().isNotEmpty) lookup.add(ch);
+      for (final ch in topChars) {
+        lookup.add(ch);
+        for (int i = 0; i < ch.length; i++) {
+          final c = ch[i];
+          if (c.trim().isNotEmpty) lookup.add(c);
         }
       }
+
       final matches = await DbService.findByChars(lookup.toList());
-      _result = RecResult(matches: matches, raw: rawStrings);
+      _result = RecResult(matches: matches, raw: topChars);
     } catch (e) {
       debugPrint('[recognize] $e');
       _result = RecResult(error: e.toString());
@@ -340,6 +437,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    HwrService.close();
     super.dispose();
   }
 }
