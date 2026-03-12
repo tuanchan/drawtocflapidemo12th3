@@ -22,8 +22,8 @@ dependencies:
   # Shared preferences for local state
   shared_preferences: ^2.2.3
 
-  # Offline handwriting recognition (Google ML Kit Digital Ink)
-  google_mlkit_digital_ink_recognition: ^0.14.2
+  # Offline stroke-based handwriting recognition
+  google_mlkit_digital_ink_recognition: ^0.13.0
 
 dev_dependencies:
   flutter_test:
