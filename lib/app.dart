@@ -87,14 +87,60 @@ class _TocflAppState extends State<TocflApp> {
 class _HomeScreen extends StatelessWidget {
   const _HomeScreen();
 
+  // Thay toàn bộ _HomeScreen.build()
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
+    // ── Error state ──
+    if (state.initError != null) {
+      return Scaffold(
+        backgroundColor: kBgMain,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline,
+                    color: kPrimaryOrange, size: 48),
+                const SizedBox(height: 16),
+                const Text(
+                  '初始化失敗',
+                  style: TextStyle(
+                      color: kTextMain, fontSize: 18, letterSpacing: 2),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: kBgCard,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: kBorderColor),
+                  ),
+                  child: Text(
+                    state.initError!,
+                    style: const TextStyle(
+                      color: kTextMuted,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ── Loading state ──
     if (!state.dbReady) {
       return const _SplashScreen();
     }
 
+    // ── Main app ──
     return Scaffold(
       backgroundColor: kBgMain,
       body: SafeArea(
@@ -111,7 +157,6 @@ class _HomeScreen extends StatelessWidget {
     );
   }
 }
-
 // ══════════════════════════════════════════════════════════════════════════════
 // SPLASH
 // ══════════════════════════════════════════════════════════════════════════════
