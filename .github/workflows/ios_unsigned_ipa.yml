@@ -2,7 +2,7 @@ name: Build iOS Unsigned IPA
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
@@ -11,23 +11,22 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      # ── 1. Checkout ──
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Setup Flutter ──
       - name: Setup Flutter (stable)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
+          flutter-version: "3.32.0"
+          channel: "stable"
           cache: true
 
-      # ── 3. Flutter pub get ──
+      - name: Flutter doctor
+        run: flutter doctor -v
+
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # ── 4. Create iOS platform if missing ──
       - name: Create iOS platform folder if needed
         run: |
           if [ ! -d "ios" ]; then
@@ -37,18 +36,15 @@ jobs:
             echo "iOS folder already exists."
           fi
 
-      # ── 5. Pod install ──
       - name: Install CocoaPods dependencies
         working-directory: ios
         run: |
           pod install --repo-update
 
-      # ── 6. Build iOS (no code sign) ──
       - name: Flutter build iOS release (no codesign)
         run: |
           flutter build ios --release --no-codesign
 
-      # ── 7. Package into .ipa (Payload/Runner.app → zip → rename) ──
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload
@@ -58,7 +54,6 @@ jobs:
           echo "IPA created: TocflWriter-unsigned.ipa"
           ls -lh TocflWriter-unsigned.ipa
 
-      # ── 8. Upload artifact ──
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
