@@ -6,17 +6,17 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
+    as di;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
-    as mlkit;
+import 'dart:typed_data';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -56,8 +56,8 @@ const Color kCanvasBg = Color(0xFF0F0E0A);
 const Color kGridColor = Color(0x26B4783C); // rgba(180,120,60,0.15)
 const Color kGridBorder = Color(0x4DB4783C); // rgba(180,120,60,0.3)
 
-// ML Kit model identifier for Traditional Chinese handwriting
-const kMlKitLanguageTag = 'zh-Hani-t016';
+// Digital ink recognition
+const String kRecognitionLanguageCode = 'zh-Hant';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -110,6 +110,35 @@ class VocabEntry {
 
   @override
   int get hashCode => id.hashCode;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RECOGNITION MODELS
+// ══════════════════════════════════════════════════════════════════════════════
+
+class RecognitionCandidate {
+  final String text;
+  final double? score;
+
+  const RecognitionCandidate({
+    required this.text,
+    this.score,
+  });
+}
+
+class RecognitionResult {
+  final List<RecognitionCandidate> candidates;
+  final bool modelReady;
+  final String? error;
+
+  const RecognitionResult({
+    required this.candidates,
+    required this.modelReady,
+    this.error,
+  });
+
+  bool get hasCandidates => candidates.isNotEmpty;
+  RecognitionCandidate? get best => hasCandidates ? candidates.first : null;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -223,171 +252,120 @@ class CanvasState {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// RECOGNITION MODELS
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// A single recognition candidate returned by ML Kit
-class RecognitionCandidate {
-  final String text;
-  final double? score;
-
-  const RecognitionCandidate({required this.text, this.score});
-
-  @override
-  String toString() =>
-      'RecognitionCandidate("$text"${score != null ? ", score=$score" : ""})';
-}
-
-/// Full recognition result
-class RecognitionResult {
-  final List<RecognitionCandidate> candidates;
-  final bool modelReady;
-  final String? error;
-
-  const RecognitionResult({
-    this.candidates = const [],
-    this.modelReady = true,
-    this.error,
-  });
-
-  bool get hasError => error != null;
-  bool get hasCandidates => candidates.isNotEmpty;
-
-  /// The top candidate text, or null
-  String? get topText => candidates.isNotEmpty ? candidates.first.text : null;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// OFFLINE RECOGNITION SERVICE (Google ML Kit Digital Ink)
+// OFFLINE RECOGNITION SERVICE
 // ══════════════════════════════════════════════════════════════════════════════
 
 class OfflineRecognitionService {
-  static final OfflineRecognitionService _instance =
-      OfflineRecognitionService._internal();
-  factory OfflineRecognitionService() => _instance;
-  OfflineRecognitionService._internal();
+  final di.DigitalInkRecognizerModelManager _modelManager =
+      di.DigitalInkRecognizerModelManager();
 
-  final mlkit.DigitalInkRecognizerModelManager _modelManager =
-      mlkit.DigitalInkRecognizerModelManager();
+  di.DigitalInkRecognizer? _recognizer;
 
-  mlkit.DigitalInkRecognizer? _recognizer;
-  bool _modelDownloaded = false;
+  bool get _platformSupported =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
-  /// Check if the zh-Hani model is already downloaded on device.
+  di.DigitalInkRecognizer _ensureRecognizer() {
+    return _recognizer ??=
+        di.DigitalInkRecognizer(languageCode: kRecognitionLanguageCode);
+  }
+
   Future<bool> isModelDownloaded() async {
+    if (!_platformSupported) return false;
     try {
-      _modelDownloaded =
-          await _modelManager.isModelDownloaded(kMlKitLanguageTag);
-      return _modelDownloaded;
+      return await _modelManager.isModelDownloaded(kRecognitionLanguageCode);
     } catch (e) {
-      debugPrint('[RecognitionService] isModelDownloaded error: $e');
+      debugPrint('[OfflineRecognitionService] isModelDownloaded error: $e');
       return false;
     }
   }
 
-  /// Download the model if not present. Returns true on success.
-  Future<bool> downloadModelIfNeeded() async {
-    try {
-      final already = await isModelDownloaded();
-      if (already) {
-        debugPrint('[RecognitionService] Model already downloaded.');
-        _modelDownloaded = true;
-        return true;
-      }
-      debugPrint(
-          '[RecognitionService] Downloading model $kMlKitLanguageTag...');
-      final success = await _modelManager.downloadModel(kMlKitLanguageTag);
-      _modelDownloaded = success;
-      debugPrint('[RecognitionService] Download result: $success');
-      return success;
-    } catch (e) {
-      debugPrint('[RecognitionService] downloadModel error: $e');
-      return false;
+  Future<void> downloadModelIfNeeded() async {
+    if (!_platformSupported) {
+      throw Exception('Digital Ink Recognition chỉ hỗ trợ Android/iOS.');
     }
+    final ready = await isModelDownloaded();
+    if (ready) return;
+    await _modelManager.downloadModel(kRecognitionLanguageCode);
   }
 
-  /// Ensure recognizer instance is created.
-  void _ensureRecognizer() {
-    _recognizer ??= mlkit.DigitalInkRecognizer(
-      languageCode: kMlKitLanguageTag,
-    );
-  }
-
-  /// Convert our HandStroke list into an ML Kit Ink object and recognize.
   Future<RecognitionResult> recognize(List<HandStroke> strokes) async {
-    if (strokes.isEmpty) {
+    if (!_platformSupported) {
       return const RecognitionResult(
         candidates: [],
-        error: 'No strokes to recognize',
+        modelReady: false,
+        error: 'Digital Ink Recognition chỉ hỗ trợ Android/iOS.',
       );
     }
 
-    if (!_modelDownloaded) {
-      final ok = await downloadModelIfNeeded();
-      if (!ok) {
-        return const RecognitionResult(
-          candidates: [],
-          modelReady: false,
-          error: 'Model not available. Please download first.',
-        );
-      }
-    }
-
-    _ensureRecognizer();
-
-    try {
-      // Convert HandStroke -> mlkit.Stroke
-      final mlkitStrokes = <mlkit.Stroke>[];
-      for (final hs in strokes) {
-        if (hs.points.isEmpty) continue;
-        final points = hs.points.map((pt) {
-          return mlkit.StrokePoint(
-            x: pt.x,
-            y: pt.y,
-            t: pt.timestamp,
-          );
-        }).toList();
-        mlkitStrokes.add(mlkit.Stroke()..points = points);
-      }
-
-      if (mlkitStrokes.isEmpty) {
-        return const RecognitionResult(
-          candidates: [],
-          error: 'No valid strokes after conversion',
-        );
-      }
-
-      // Build Ink object
-      final ink = mlkit.Ink()..strokes = mlkitStrokes;
-
-      // Run recognition
-      final results = await _recognizer!.recognize(ink);
-
-      // Map to our model
-      final candidates = results
-          .take(10)
-          .map((c) => RecognitionCandidate(
-                text: c.text,
-                score: c.score,
-              ))
-          .toList();
-
-      return RecognitionResult(
-        candidates: candidates,
-        modelReady: true,
-      );
-    } catch (e) {
-      debugPrint('[RecognitionService] recognize error: $e');
+    if (strokes.isEmpty) {
       return RecognitionResult(
         candidates: const [],
-        error: 'Recognition failed: $e',
+        modelReady: await isModelDownloaded(),
+        error: 'Canvas đang trống.',
+      );
+    }
+
+    try {
+      await downloadModelIfNeeded();
+
+      final ink = _toInk(strokes);
+      final recognizer = _ensureRecognizer();
+
+      final context = di.DigitalInkRecognitionContext(
+        writingArea: di.WritingArea(
+          width: kCanvasLogicalSize,
+          height: kCanvasLogicalSize,
+        ),
+      );
+
+      final result = await recognizer.recognize(ink, context: context);
+
+      return RecognitionResult(
+        modelReady: true,
+        candidates: result
+            .map(
+              (e) => RecognitionCandidate(
+                text: e.text,
+                score: e.score,
+              ),
+            )
+            .toList(),
+      );
+    } catch (e) {
+      debugPrint('[OfflineRecognitionService] recognize error: $e');
+      return RecognitionResult(
+        candidates: const [],
+        modelReady: await isModelDownloaded(),
+        error: e.toString(),
       );
     }
   }
 
-  /// Close the recognizer to free resources.
-  void close() {
-    _recognizer?.close();
+  di.Ink _toInk(List<HandStroke> strokes) {
+    final ink = di.Ink();
+    ink.strokes =
+        strokes.where((s) => s.points.isNotEmpty).map(_toMlStroke).toList();
+    return ink;
+  }
+
+  di.Stroke _toMlStroke(HandStroke stroke) {
+    final mlStroke = di.Stroke();
+    mlStroke.points = stroke.points
+        .map(
+          (p) => di.StrokePoint(
+            x: p.x,
+            y: p.y,
+            t: p.timestamp,
+          ),
+        )
+        .toList();
+    return mlStroke;
+  }
+
+  Future<void> dispose() async {
+    try {
+      await _recognizer?.close();
+    } catch (_) {}
     _recognizer = null;
   }
 }
@@ -423,7 +401,8 @@ class DbService {
     if (!File(dbPath).existsSync()) {
       debugPrint('[DbService] Copying database from assets...');
       final data = await rootBundle.load(kDbAssetPath);
-      final bytes = data.buffer.asUint8List();
+      final bytes = Uint8List.fromList(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes));
       await File(dbPath).writeAsBytes(bytes, flush: true);
       debugPrint('[DbService] Database copied.');
     } else {
@@ -620,6 +599,9 @@ class PrefsService {
 
 /// Central application state, provided via Provider
 class AppState extends ChangeNotifier {
+  final OfflineRecognitionService _recognitionService =
+      OfflineRecognitionService();
+
   // ── DB init ──
   bool _dbReady = false;
   bool get dbReady => _dbReady;
@@ -628,6 +610,8 @@ class AppState extends ChangeNotifier {
   String _searchQuery = '';
   String? _selectedLevel;
   String? _selectedContext;
+  String? _initError;
+  String? get initError => _initError;
 
   String get searchQuery => _searchQuery;
   String? get selectedLevel => _selectedLevel;
@@ -670,155 +654,150 @@ class AppState extends ChangeNotifier {
   int _currentListIndex = -1;
   int get currentListIndex => _currentListIndex;
 
-  // Debounce timer for search
-  Timer? _searchDebounce;
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // RECOGNITION STATE (NEW)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  final OfflineRecognitionService _recognitionService =
-      OfflineRecognitionService();
-
+  // ── Recognition ──
   bool _recognitionModelReady = false;
-  bool _recognitionModelDownloading = false;
   bool _recognitionBusy = false;
+  bool _recognitionModelDownloading = false;
   RecognitionResult? _lastRecognition;
 
   bool get recognitionModelReady => _recognitionModelReady;
-  bool get recognitionModelDownloading => _recognitionModelDownloading;
   bool get recognitionBusy => _recognitionBusy;
+  bool get recognitionModelDownloading => _recognitionModelDownloading;
   RecognitionResult? get lastRecognition => _lastRecognition;
 
-  /// Whether the "Check" button should be enabled
   bool get canRecognize =>
-      _selectedEntry != null &&
-      _canvasState.hasStrokes &&
-      _recognitionModelReady &&
-      !_recognitionBusy;
+      selectedEntry != null &&
+      canvasState.strokes.isNotEmpty &&
+      recognitionModelReady &&
+      !recognitionBusy &&
+      !recognitionModelDownloading;
 
-  /// Check model status on app startup (non-blocking).
-  Future<void> _checkRecognitionModel() async {
+  bool get isExactMatch {
+    final target = _normalizeRecognitionText(selectedEntry?.vocabulary);
+    final best = _normalizeRecognitionText(lastRecognition?.best?.text);
+    return target.isNotEmpty && best.isNotEmpty && target == best;
+  }
+
+  bool get isNearMatch {
+    final target = _normalizeRecognitionText(selectedEntry?.vocabulary);
+    if (target.isEmpty || lastRecognition == null) return false;
+    final top5 = lastRecognition!.candidates.take(5).map((e) {
+      return _normalizeRecognitionText(e.text);
+    });
+    return top5.contains(target) && !isExactMatch;
+  }
+
+  String get recognitionVerdict {
+    if (isExactMatch) return 'correct';
+    if (isNearMatch) return 'near';
+    return 'wrong';
+  }
+
+  String _normalizeRecognitionText(String? value) {
+    return (value ?? '').trim();
+  }
+
+  // Debounce timer for search
+  Timer? _searchDebounce;
+
+  // ──────────────────────────────────────────────
+  // INIT
+  // ──────────────────────────────────────────────
+
+  // Thay toàn bộ method init()
+  Future<void> init() async {
+    try {
+      await DbService.init();
+    } catch (e, st) {
+      debugPrint('[AppState] DbService.init() FAILED: $e\n$st');
+      _initError = e.toString();
+      _dbReady = false;
+      notifyListeners();
+      return;
+    }
+
+    try {
+      await PrefsService.init();
+    } catch (e) {
+      debugPrint('[AppState] PrefsService.init() FAILED: $e');
+    }
+
+    _dbReady = true;
+    _selectedLevel = PrefsService.lastLevel;
+    _selectedContext = PrefsService.lastContext;
+
+    await _loadFilterOptions();
+    await _loadRecentEntries();
+    _favoriteIds = PrefsService.favoriteIds;
+    await _loadList(reset: true);
+    await prepareRecognitionModel();
+
+    notifyListeners();
+  }
+
+  // ──────────────────────────────────────────────
+  // RECOGNITION
+  // ──────────────────────────────────────────────
+
+  Future<void> prepareRecognitionModel() async {
     try {
       _recognitionModelReady = await _recognitionService.isModelDownloaded();
-    } catch (e) {
-      debugPrint('[AppState] Recognition model check failed: $e');
+    } catch (_) {
       _recognitionModelReady = false;
     }
+    notifyListeners();
   }
 
-  /// Explicitly download the recognition model.
-  Future<void> prepareRecognitionModel() async {
+  Future<void> downloadRecognitionModel() async {
     if (_recognitionModelDownloading) return;
     _recognitionModelDownloading = true;
+    _lastRecognition = null;
     notifyListeners();
 
     try {
-      final ok = await _recognitionService.downloadModelIfNeeded();
-      _recognitionModelReady = ok;
+      await _recognitionService.downloadModelIfNeeded();
+      _recognitionModelReady = await _recognitionService.isModelDownloaded();
     } catch (e) {
-      debugPrint('[AppState] prepareRecognitionModel error: $e');
+      _lastRecognition = RecognitionResult(
+        candidates: const [],
+        modelReady: false,
+        error: e.toString(),
+      );
       _recognitionModelReady = false;
+    } finally {
+      _recognitionModelDownloading = false;
+      notifyListeners();
     }
-
-    _recognitionModelDownloading = false;
-    notifyListeners();
   }
 
-  /// Run recognition on current canvas strokes.
   Future<void> recognizeCurrentStrokes() async {
     if (_recognitionBusy) return;
-    if (!_canvasState.hasStrokes) return;
+    if (_selectedEntry == null) return;
+    if (_canvasState.strokes.isEmpty) return;
 
     _recognitionBusy = true;
     _lastRecognition = null;
     notifyListeners();
 
     try {
-      // Gather all completed strokes (ignore activeStroke since user should
-      // have lifted finger before pressing Check)
-      final allStrokes = <HandStroke>[
-        ..._canvasState.strokes,
-        if (_canvasState.activeStroke != null &&
-            !_canvasState.activeStroke!.isEmpty)
-          _canvasState.activeStroke!,
-      ];
-
-      _lastRecognition = await _recognitionService.recognize(allStrokes);
-
-      // Update model readiness from result
-      if (_lastRecognition != null) {
-        _recognitionModelReady = _lastRecognition!.modelReady;
+      if (!_recognitionModelReady) {
+        await _recognitionService.downloadModelIfNeeded();
+        _recognitionModelReady = await _recognitionService.isModelDownloaded();
       }
+
+      final result = await _recognitionService.recognize(_canvasState.strokes);
+      _lastRecognition = result;
+      _recognitionModelReady = result.modelReady;
     } catch (e) {
       _lastRecognition = RecognitionResult(
         candidates: const [],
-        error: 'Unexpected error: $e',
+        modelReady: _recognitionModelReady,
+        error: e.toString(),
       );
+    } finally {
+      _recognitionBusy = false;
+      notifyListeners();
     }
-
-    _recognitionBusy = false;
-    notifyListeners();
-  }
-
-  // ── Recognition verdict helpers ──
-
-  /// Whether the top candidate exactly matches the target vocabulary
-  bool get isExactMatch {
-    if (_lastRecognition == null || _selectedEntry == null) return false;
-    final top = _lastRecognition!.topText;
-    if (top == null) return false;
-    return top == _selectedEntry!.vocabulary;
-  }
-
-  /// Whether the target vocabulary appears anywhere in the top 5 candidates
-  bool get isNearMatch {
-    if (_lastRecognition == null || _selectedEntry == null) return false;
-    final target = _selectedEntry!.vocabulary;
-    final top5 = _lastRecognition!.candidates.take(5);
-    return top5.any((c) => c.text == target);
-  }
-
-  /// Return a verdict string for the current recognition
-  /// "correct" | "near" | "wrong" | null (no result yet)
-  String? get recognitionVerdict {
-    if (_lastRecognition == null) return null;
-    if (!_lastRecognition!.hasCandidates) return 'wrong';
-    if (isExactMatch) return 'correct';
-    if (isNearMatch) return 'near';
-    return 'wrong';
-  }
-
-  // ──────────────────────────────────────────────
-  // INIT
-  // ──────────────────────────────────────────────
-
-  Future<void> init() async {
-    await DbService.init();
-    await PrefsService.init();
-
-    _dbReady = true;
-
-    // Restore last filters
-    _selectedLevel = PrefsService.lastLevel;
-    _selectedContext = PrefsService.lastContext;
-
-    // Load filter options
-    await _loadFilterOptions();
-
-    // Load recent entries
-    await _loadRecentEntries();
-
-    // Load favorites
-    _favoriteIds = PrefsService.favoriteIds;
-
-    // Initial list load
-    await _loadList(reset: true);
-
-    // Check recognition model (non-blocking, runs in background)
-    _checkRecognitionModel();
-
-    notifyListeners();
   }
 
   // ──────────────────────────────────────────────
@@ -928,7 +907,7 @@ class AppState extends ChangeNotifier {
     _selectedEntry = entry;
     _currentListIndex = _vocabList.indexOf(entry);
     _canvasState = const CanvasState(); // clear canvas on new word
-    _lastRecognition = null; // clear previous recognition
+    _lastRecognition = null; // reset recognition when changing word
     await PrefsService.addRecentId(entry.id);
     _favoriteIds = PrefsService.favoriteIds;
     notifyListeners();
@@ -972,10 +951,6 @@ class AppState extends ChangeNotifier {
 
   void canvasStartStroke(double x, double y) {
     _canvasState = _canvasState.startStroke(x, y);
-    // Clear previous recognition when user starts new drawing
-    if (_lastRecognition != null) {
-      _lastRecognition = null;
-    }
     notifyListeners();
   }
 
@@ -991,7 +966,7 @@ class AppState extends ChangeNotifier {
 
   void canvasUndo() {
     _canvasState = _canvasState.undo();
-    _lastRecognition = null; // clear recognition on canvas change
+    _lastRecognition = null;
     notifyListeners();
   }
 
@@ -1041,7 +1016,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    _recognitionService.close();
+    _recognitionService.dispose();
     super.dispose();
   }
 }

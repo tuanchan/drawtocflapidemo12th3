@@ -24,11 +24,7 @@ const kTextSub = Color(0xFFB09070);
 const kTextMuted = Color(0xFF705040);
 const kBorderColor = Color(0xFF2A2018);
 const kBorderAccent = Color(0x4DB4783C);
-
-// Result colors
-const kCorrectColor = Color(0xFF4ECDC4);
-const kNearColor = Color(0xFFFFEAA7);
-const kWrongColor = Color(0xFFFF6B6B);
+const kSuccessColor = Color(0xFF79D97C);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ROOT APP
@@ -45,6 +41,7 @@ class _TocflAppState extends State<TocflApp> {
   @override
   void initState() {
     super.initState();
+    // Init DB and state after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().init();
     });
@@ -84,7 +81,7 @@ class _TocflAppState extends State<TocflApp> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME SCREEN
+// HOME SCREEN — adaptive landscape/portrait layout
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _HomeScreen extends StatelessWidget {
@@ -191,7 +188,7 @@ class _SplashScreenState extends State<_SplashScreen>
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LANDSCAPE LAYOUT
+// LANDSCAPE LAYOUT — left: search+list, right: practice panel
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _LandscapeLayout extends StatelessWidget {
@@ -202,6 +199,7 @@ class _LandscapeLayout extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // ── Left panel: search + filter + list ──
         SizedBox(
           width: 300,
           child: Container(
@@ -212,6 +210,7 @@ class _LandscapeLayout extends StatelessWidget {
             child: const _LeftPanel(),
           ),
         ),
+        // ── Right panel: practice area ──
         const Expanded(
           child: _PracticePanel(),
         ),
@@ -238,6 +237,7 @@ class _PortraitLayoutState extends State<_PortraitLayout> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Toggle tabs
         _PortraitTabBar(
           showList: _showList,
           onToggle: (v) => setState(() => _showList = v),
@@ -632,7 +632,6 @@ class _IconBtn extends StatelessWidget {
   }
 }
 
-// ── Vocab list ──
 class _VocabList extends StatelessWidget {
   final List<VocabEntry> entries;
   final VocabEntry? selectedEntry;
@@ -802,7 +801,7 @@ class _VocabCard extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PRACTICE PANEL
+// PRACTICE PANEL — right side (landscape) or main panel (portrait)
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _PracticePanel extends StatelessWidget {
@@ -862,7 +861,6 @@ class _PracticeEmptyState extends StatelessWidget {
   }
 }
 
-/// Wide practice layout (landscape right panel)
 class _PracticeWide extends StatelessWidget {
   final VocabEntry entry;
 
@@ -875,7 +873,6 @@ class _PracticeWide extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Canvas area ──
           Expanded(
             flex: 5,
             child: Column(
@@ -889,7 +886,6 @@ class _PracticeWide extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 20),
-          // ── Character info + nav ──
           Expanded(
             flex: 4,
             child: Column(
@@ -907,7 +903,6 @@ class _PracticeWide extends StatelessWidget {
   }
 }
 
-/// Narrow practice layout (portrait)
 class _PracticeNarrow extends StatelessWidget {
   final VocabEntry entry;
 
@@ -1302,7 +1297,7 @@ class _CanvasBtn extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// RECOGNITION SECTION (NEW)
+// RECOGNITION SECTION
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _RecognitionSection extends StatelessWidget {
@@ -1312,183 +1307,138 @@ class _RecognitionSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
+    String modelStatus;
+    Color modelColor;
+
+    if (state.recognitionModelDownloading) {
+      modelStatus = 'Downloading';
+      modelColor = kPrimaryOrange;
+    } else if (state.recognitionModelReady) {
+      modelStatus = 'Ready';
+      modelColor = kSuccessColor;
+    } else {
+      modelStatus = 'Not downloaded';
+      modelColor = kTextMuted;
+    }
+
     return Container(
-      padding: const EdgeInsets.all(16),
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: kBgCard,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: kBorderColor),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Model status + Check button row ──
-          _RecognitionControls(state: state),
-
-          // ── Recognition result ──
-          if (state.lastRecognition != null) ...[
-            const SizedBox(height: 14),
-            _RecognitionResultWidget(
-              result: state.lastRecognition!,
-              verdict: state.recognitionVerdict,
-              targetVocab: state.selectedEntry?.vocabulary ?? '',
-            ),
-          ],
-
-          // ── Busy indicator ──
-          if (state.recognitionBusy) ...[
-            const SizedBox(height: 14),
-            const Center(
-              child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: kPrimaryOrange,
+          Row(
+            children: [
+              const Icon(Icons.gesture_rounded,
+                  color: kPrimaryOrange, size: 18),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Handwriting Recognition',
+                  style: TextStyle(
+                    color: kTextMain,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.6,
+                  ),
                 ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: modelColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: modelColor.withOpacity(0.35)),
+                ),
+                child: Text(
+                  modelStatus,
+                  style: TextStyle(
+                    color: modelColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (!state.recognitionModelReady) ...[
+            const SizedBox(height: 10),
+            const Text(
+              '模型只需下載一次，之後可離線辨識手寫字。',
+              style: TextStyle(
+                color: kTextSub,
+                fontSize: 12,
               ),
             ),
           ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              _ActionPill(
+                label: state.recognitionModelDownloading ? '下載中…' : '下載模型',
+                icon: Icons.download_rounded,
+                enabled: !state.recognitionModelReady &&
+                    !state.recognitionModelDownloading &&
+                    !state.recognitionBusy,
+                accent: false,
+                onTap: () =>
+                    context.read<AppState>().downloadRecognitionModel(),
+              ),
+              _ActionPill(
+                label: state.recognitionBusy ? 'Checking…' : 'Check',
+                icon: Icons.spellcheck_rounded,
+                enabled: state.canRecognize,
+                accent: true,
+                onTap: () => context.read<AppState>().recognizeCurrentStrokes(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const _RecognitionResultCard(),
         ],
       ),
     );
   }
 }
 
-class _RecognitionControls extends StatelessWidget {
-  final AppState state;
-
-  const _RecognitionControls({required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        // ── Model status indicator ──
-        _ModelStatusBadge(
-          ready: state.recognitionModelReady,
-          downloading: state.recognitionModelDownloading,
-        ),
-        const SizedBox(width: 10),
-
-        // ── Download button (only if model not ready and not downloading) ──
-        if (!state.recognitionModelReady && !state.recognitionModelDownloading)
-          Expanded(
-            child: _RecognitionActionBtn(
-              label: '下載模型',
-              icon: Icons.download,
-              onTap: () => context.read<AppState>().prepareRecognitionModel(),
-              enabled: true,
-              accent: false,
-            ),
-          ),
-
-        if (state.recognitionModelReady) const Spacer(),
-
-        // ── Check button ──
-        _RecognitionActionBtn(
-          label: '辨識',
-          icon: Icons.check_circle_outline,
-          onTap: () => context.read<AppState>().recognizeCurrentStrokes(),
-          enabled: state.canRecognize,
-          accent: true,
-        ),
-      ],
-    );
-  }
-}
-
-class _ModelStatusBadge extends StatelessWidget {
-  final bool ready;
-  final bool downloading;
-
-  const _ModelStatusBadge({
-    required this.ready,
-    required this.downloading,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final Color dotColor;
-    final String label;
-
-    if (downloading) {
-      dotColor = kNearColor;
-      label = '下載中…';
-    } else if (ready) {
-      dotColor = kCorrectColor;
-      label = '模型就緒';
-    } else {
-      dotColor = kWrongColor;
-      label = '需下載';
-    }
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(
-            color: dotColor,
-            shape: BoxShape.circle,
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: TextStyle(
-            color: dotColor,
-            fontSize: 11,
-            letterSpacing: 0.5,
-          ),
-        ),
-        if (downloading) ...[
-          const SizedBox(width: 8),
-          const SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.5,
-              color: kNearColor,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _RecognitionActionBtn extends StatelessWidget {
+class _ActionPill extends StatelessWidget {
   final String label;
   final IconData icon;
-  final VoidCallback onTap;
   final bool enabled;
   final bool accent;
+  final VoidCallback onTap;
 
-  const _RecognitionActionBtn({
+  const _ActionPill({
     required this.label,
     required this.icon,
-    required this.onTap,
     required this.enabled,
     required this.accent,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bg = accent && enabled
-        ? kPrimaryOrange
-        : kBgCard2.withOpacity(enabled ? 1 : 0.6);
-    final fg = accent && enabled
-        ? kBgMain
-        : (enabled ? kTextSub : kTextMuted.withOpacity(0.4));
-    final border = accent && enabled ? kPrimaryOrange : kBorderColor;
+    final bg = accent && enabled ? kPrimaryOrange : kBgCard2;
+    final fg =
+        enabled ? (accent ? kBgMain : kTextSub) : kTextMuted.withOpacity(0.45);
+
+    final border = enabled
+        ? (accent ? kPrimaryOrange : kBorderAccent)
+        : kBorderColor.withOpacity(0.5);
 
     return GestureDetector(
       onTap: enabled ? onTap : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(10),
@@ -1503,9 +1453,8 @@ class _RecognitionActionBtn extends StatelessWidget {
               label,
               style: TextStyle(
                 color: fg,
-                fontSize: 13,
-                fontWeight:
-                    accent && enabled ? FontWeight.w600 : FontWeight.normal,
+                fontSize: 12,
+                fontWeight: accent ? FontWeight.w700 : FontWeight.w500,
                 letterSpacing: 0.5,
               ),
             ),
@@ -1516,202 +1465,173 @@ class _RecognitionActionBtn extends StatelessWidget {
   }
 }
 
-class _RecognitionResultWidget extends StatelessWidget {
-  final RecognitionResult result;
-  final String verdict;
-  final String targetVocab;
-
-  const _RecognitionResultWidget({
-    required this.result,
-    required this.verdict,
-    required this.targetVocab,
-  });
+class _RecognitionResultCard extends StatelessWidget {
+  const _RecognitionResultCard();
 
   @override
   Widget build(BuildContext context) {
-    // Error state
-    if (result.error != null && result.candidates.isEmpty) {
+    final state = context.watch<AppState>();
+    final result = state.lastRecognition;
+
+    if (state.recognitionBusy) {
       return Container(
-        padding: const EdgeInsets.all(12),
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: kWrongColor.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: kWrongColor.withOpacity(0.3)),
+          color: kBgCard2,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorderColor),
         ),
-        child: Row(
+        child: const Row(
           children: [
-            const Icon(Icons.error_outline, color: kWrongColor, size: 18),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                result.error!,
-                style: const TextStyle(color: kWrongColor, fontSize: 12),
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: kPrimaryOrange,
               ),
+            ),
+            SizedBox(width: 10),
+            Text(
+              '正在辨識手寫字…',
+              style: TextStyle(color: kTextSub, fontSize: 12),
             ),
           ],
         ),
       );
     }
 
-    if (result.candidates.isEmpty) {
+    if (result == null) {
       return Container(
-        padding: const EdgeInsets.all(12),
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: kBgCard2,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: kBorderColor),
         ),
         child: const Text(
-          '無法辨識，請重試',
-          style: TextStyle(color: kTextMuted, fontSize: 12),
-          textAlign: TextAlign.center,
+          '畫好之後按 Check 查看辨識結果。',
+          style: TextStyle(
+            color: kTextMuted,
+            fontSize: 12,
+          ),
         ),
       );
     }
 
-    // ── Verdict banner ──
-    final Color bannerColor;
-    final String bannerText;
-    final IconData bannerIcon;
-
-    switch (verdict) {
-      case 'correct':
-        bannerColor = kCorrectColor;
-        bannerText = '✓ 正確！';
-        bannerIcon = Icons.check_circle;
-        break;
-      case 'near':
-        bannerColor = kNearColor;
-        bannerText = '≈ 接近答案';
-        bannerIcon = Icons.swap_horiz;
-        break;
-      default:
-        bannerColor = kWrongColor;
-        bannerText = '✗ 不正確';
-        bannerIcon = Icons.cancel_outlined;
+    if (result.error != null && result.error!.trim().isNotEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: kBgCard2,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorderColor),
+        ),
+        child: Text(
+          result.error!,
+          style: const TextStyle(
+            color: kTextSub,
+            fontSize: 12,
+          ),
+        ),
+      );
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // ── Verdict banner ──
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: bannerColor.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: bannerColor.withOpacity(0.4)),
-          ),
-          child: Row(
-            children: [
-              Icon(bannerIcon, color: bannerColor, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  bannerText,
-                  style: TextStyle(
-                    color: bannerColor,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1,
-                  ),
-                ),
-              ),
-              if (result.topText != null)
-                Text(
-                  result.topText!,
-                  style: TextStyle(
-                    color: bannerColor,
-                    fontSize: 28,
-                    fontWeight: FontWeight.w300,
-                  ),
-                ),
-            ],
-          ),
-        ),
+    Color verdictColor;
+    String verdictText;
 
-        const SizedBox(height: 10),
+    switch (state.recognitionVerdict) {
+      case 'correct':
+        verdictColor = kSuccessColor;
+        verdictText = '正確';
+        break;
+      case 'near':
+        verdictColor = kPrimaryOrange;
+        verdictText = '接近答案';
+        break;
+      default:
+        verdictColor = const Color(0xFFFF8C6A);
+        verdictText = '不正確';
+        break;
+    }
 
-        // ── Top 5 candidates ──
-        Text(
-          '候選字',
-          style: TextStyle(
-            color: kTextMuted.withOpacity(0.6),
-            fontSize: 10,
-            letterSpacing: 2,
-          ),
+    final top5 = result.candidates.take(5).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: kBgCard2,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: verdictColor.withOpacity(0.35),
         ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: result.candidates.take(5).map((c) {
-            final isTarget = c.text == targetVocab;
-            final chipColor = isTarget ? kCorrectColor : kTextSub;
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: isTarget ? kCorrectColor.withOpacity(0.12) : kBgCard2,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color:
-                      isTarget ? kCorrectColor.withOpacity(0.5) : kBorderColor,
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    c.text,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            verdictText,
+            style: TextStyle(
+              color: verdictColor,
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          if (top5.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: top5.map((c) {
+                final isTarget = c.text.trim() ==
+                    (state.selectedEntry?.vocabulary.trim() ?? '');
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isTarget
+                        ? kPrimaryOrange.withOpacity(0.12)
+                        : kBgMain.withOpacity(0.35),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isTarget
+                          ? kPrimaryOrange.withOpacity(0.45)
+                          : kBorderColor,
+                    ),
+                  ),
+                  child: Text(
+                    c.score != null
+                        ? '${c.text}  (${c.score!.toStringAsFixed(2)})'
+                        : c.text,
                     style: TextStyle(
-                      color: chipColor,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w400,
+                      color: isTarget ? kPrimaryOrange : kTextMain,
+                      fontSize: 13,
+                      fontWeight: isTarget ? FontWeight.w700 : FontWeight.w500,
                     ),
                   ),
-                  if (c.score != null) ...[
-                    const SizedBox(width: 4),
-                    Text(
-                      c.score!.toStringAsFixed(1),
-                      style: TextStyle(
-                        color: kTextMuted.withOpacity(0.5),
-                        fontSize: 9,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            );
-          }).toList(),
-        ),
-
-        // ── Hint text when model not downloaded ──
-        if (!result.modelReady) ...[
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: kNearColor.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: kNearColor.withOpacity(0.3)),
+                );
+              }).toList(),
             ),
-            child: const Text(
-              '辨識模型尚未下載。\n下載後即可離線使用，僅需下載一次（約20MB）。',
-              style: TextStyle(
-                color: kNearColor,
-                fontSize: 11,
-                height: 1.5,
-              ),
+          ] else ...[
+            const SizedBox(height: 8),
+            const Text(
+              '沒有候選結果',
+              style: TextStyle(color: kTextMuted, fontSize: 12),
             ),
-          ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// NAV BUTTONS
+// NAV BUTTONS (prev / next / random)
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _NavButtons extends StatelessWidget {
