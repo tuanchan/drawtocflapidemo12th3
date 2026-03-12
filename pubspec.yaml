@@ -18,7 +18,7 @@ dependencies:
   provider: ^6.1.2
   shared_preferences: ^2.2.3
 
-  tflite_flutter: ^0.10.4
+  tflite_flutter: ^0.12.1
   image: ^4.2.0 # resize + grayscale trước khi feed model
 
 dev_dependencies:
