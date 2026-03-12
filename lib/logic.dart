@@ -171,11 +171,6 @@ class AppState extends ChangeNotifier {
       _canvas.strokes.isNotEmpty && _modelReady && !_busy && !_modelDownloading;
 
   Future<void> init() async {
-    try {
-      _modelReady = await _svc.isReady();
-    } catch (e) {
-      _initError = e.toString();
-    }
     _ready = true;
     notifyListeners();
   }
