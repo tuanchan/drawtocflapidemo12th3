@@ -877,47 +877,80 @@ class _MobileInfoBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
-    // Khi đã pin chữ → hiện info của pinned entry
+    // ── Pinned entry ──────────────────────────────────────────────────────
     if (state.pinnedEntry != null) {
       final entry = state.pinnedEntry!;
       return Container(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(entry.vocabulary,
-                style: const TextStyle(
+            // Row 1: char + pinyin/tags + search button
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Text(
+                  entry.vocabulary,
+                  style: const TextStyle(
                     color: kAccent,
                     fontSize: 36,
                     fontWeight: FontWeight.w200,
-                    height: 1)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (entry.pinyin != null)
-                    Text(entry.pinyin!,
-                        style: const TextStyle(
+                    height: 1,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (entry.pinyin != null)
+                        Text(
+                          entry.pinyin!,
+                          style: const TextStyle(
                             color: kTextPrimary,
                             fontSize: 13,
-                            letterSpacing: 0.3)),
-                  const SizedBox(height: 2),
-                  Wrap(spacing: 4, runSpacing: 2, children: [
-                    if (entry.levelCode != null) _Tag(entry.levelCode!),
-                    if (entry.partOfSpeech != null) _Tag(entry.partOfSpeech!),
-                  ]),
-                ],
-              ),
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      const SizedBox(height: 3),
+                      Wrap(spacing: 4, runSpacing: 2, children: [
+                        if (entry.levelCode != null) _Tag(entry.levelCode!),
+                        if (entry.context != null) _Tag(entry.context!),
+                        if (entry.partOfSpeech != null)
+                          _Tag(entry.partOfSpeech!),
+                      ]),
+                    ],
+                  ),
+                ),
+                _SearchBtn(char: entry.vocabulary),
+              ],
             ),
-            _SearchBtn(char: entry.vocabulary),
+            // Row 2: Samples + pending chips
+            const SizedBox(height: 5),
+            Row(
+              children: [
+                _StatChip(
+                  label: 'Samples',
+                  value: '${state.localSampleCountForPinned}',
+                  highlight: state.localSampleCountForPinned > 0,
+                ),
+                const SizedBox(width: 6),
+                if (state.pendingUploadCount > 0)
+                  _StatChip(
+                    label: 'pending',
+                    value: '${state.pendingUploadCount}',
+                    isWarning: state.pendingUploadCount > 50,
+                  ),
+              ],
+            ),
           ],
         ),
       );
     }
 
-    // Khi chưa pin → hiện top candidate nếu có
+    // ── Realtime top candidate (no pinned) ────────────────────────────────
     if (state.realtimeCandidates.isNotEmpty) {
       final top = state.realtimeCandidates.first;
       final pct = (top.score * 100).round();
@@ -931,16 +964,24 @@ class _MobileInfoBar extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Text(top.vocabulary,
-                style: TextStyle(
-                    color: topColor,
-                    fontSize: 36,
-                    fontWeight: FontWeight.w200,
-                    height: 1)),
+            Text(
+              top.vocabulary,
+              style: TextStyle(
+                color: topColor,
+                fontSize: 36,
+                fontWeight: FontWeight.w200,
+                height: 1,
+              ),
+            ),
             const SizedBox(width: 8),
-            Text('$pct%',
-                style: TextStyle(
-                    color: topColor, fontSize: 11, letterSpacing: 0.3)),
+            Text(
+              '$pct%',
+              style: TextStyle(
+                color: topColor,
+                fontSize: 11,
+                letterSpacing: 0.3,
+              ),
+            ),
             const SizedBox(width: 12),
             _SearchBtn(char: top.vocabulary),
           ],
@@ -948,7 +989,7 @@ class _MobileInfoBar extends StatelessWidget {
       );
     }
 
-    // Trống
+    // ── Empty ─────────────────────────────────────────────────────────────
     return const SizedBox.shrink();
   }
 }
