@@ -232,26 +232,81 @@ class DbService {
 
 // ── Canvas Render Service ─────────────────────────────────────────────────────
 
+// ── Canvas Render Service ─────────────────────────────────────────────────────
+// Thay thế toàn bộ class CanvasRenderService trong logic.dart
+
 class CanvasRenderService {
+  /// Render PNG tối ưu cho OCR:
+  ///   1. Vẽ nét với strokeWidth × kOcrStrokeBoost (dày hơn → Vision rõ hơn)
+  ///   2. Auto-crop bounding box của toàn bộ nét vẽ
+  ///   3. Thêm padding 20% xung quanh
+  ///   4. Scale lên imageSize cuối cùng
+
+  static const double kOcrStrokeBoost = 1.5;
+  static const double kPaddingRatio = 0.20; // 20% padding mỗi phía
+
   static Future<Uint8List> renderPngBytes(
     List<StrokeData> strokes, {
     required double strokeWidth,
     int imageSize = 512,
   }) async {
+    if (strokes.isEmpty) {
+      throw Exception('Không có nét vẽ để render.');
+    }
+
+    // ── Bước 1: Tính bounding box của tất cả điểm ────────────────────────────
+    double minX = double.infinity;
+    double minY = double.infinity;
+    double maxX = double.negativeInfinity;
+    double maxY = double.negativeInfinity;
+
+    for (final s in strokes) {
+      for (final p in s.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+
+    // Đảm bảo bounding box có kích thước tối thiểu (tránh chia 0)
+    final rawW = (maxX - minX).clamp(1.0, double.infinity);
+    final rawH = (maxY - minY).clamp(1.0, double.infinity);
+
+    // ── Bước 2: Tính padding ──────────────────────────────────────────────────
+    final padX = rawW * kPaddingRatio;
+    final padY = rawH * kPaddingRatio;
+
+    final cropX = (minX - padX).clamp(0.0, kLogicalSize);
+    final cropY = (minY - padY).clamp(0.0, kLogicalSize);
+    final cropMaxX = (maxX + padX).clamp(0.0, kLogicalSize);
+    final cropMaxY = (maxY + padY).clamp(0.0, kLogicalSize);
+    final cropW = (cropMaxX - cropX).clamp(1.0, kLogicalSize);
+    final cropH = (cropMaxY - cropY).clamp(1.0, kLogicalSize);
+
+    // Scale để fill imageSize (lấy cạnh dài làm chuẩn, giữ tỷ lệ vuông)
+    final cropSide = cropW > cropH ? cropW : cropH;
+    final scale = imageSize / cropSide;
+
+    // Offset để căn giữa trong ảnh vuông
+    final offsetX = (imageSize - cropW * scale) / 2 - cropX * scale;
+    final offsetY = (imageSize - cropH * scale) / 2 - cropY * scale;
+
+    // ── Bước 3: Render ────────────────────────────────────────────────────────
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    final scale = imageSize / kLogicalSize;
 
-    // nền trắng cho OCR
+    // Nền trắng
     canvas.drawRect(
       Rect.fromLTWH(0, 0, imageSize.toDouble(), imageSize.toDouble()),
       Paint()..color = Colors.white,
     );
 
-    // vẽ nét đen
+    // Nét đen dày hơn (×1.5 so với strokeWidth gốc)
+    final boostedStrokeWidth = strokeWidth * kOcrStrokeBoost;
     final ink = Paint()
       ..color = Colors.black
-      ..strokeWidth = strokeWidth * scale
+      ..strokeWidth = boostedStrokeWidth * scale
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
@@ -261,18 +316,27 @@ class CanvasRenderService {
 
       if (s.points.length == 1) {
         canvas.drawCircle(
-          Offset(s.points.first.x * scale, s.points.first.y * scale),
-          (strokeWidth * 0.5 + 1.0) * scale,
+          Offset(
+            s.points.first.x * scale + offsetX,
+            s.points.first.y * scale + offsetY,
+          ),
+          (boostedStrokeWidth * 0.5 + 1.0) * scale,
           ink,
         );
         continue;
       }
 
       final path = Path()
-        ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
+        ..moveTo(
+          s.points.first.x * scale + offsetX,
+          s.points.first.y * scale + offsetY,
+        );
 
       for (final pt in s.points.skip(1)) {
-        path.lineTo(pt.x * scale, pt.y * scale);
+        path.lineTo(
+          pt.x * scale + offsetX,
+          pt.y * scale + offsetY,
+        );
       }
       canvas.drawPath(path, ink);
     }
@@ -288,7 +352,6 @@ class CanvasRenderService {
     return byteData.buffer.asUint8List();
   }
 }
-
 // ── Vision OCR Service (iOS native bridge) ────────────────────────────────────
 
 class VisionOcrService {
