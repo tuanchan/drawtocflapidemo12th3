@@ -15,7 +15,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:archive/archive_io.dart';
-// import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
+import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 import 'package:uuid/uuid.dart';
 
 // ── Proto Match Candidate ─────────────────────────────────────────────────────
@@ -976,14 +976,72 @@ class EmbeddingEncoder {
   }
 
   // Cached interpreter — reused across calls until model path changes.
-  // static tfl.Interpreter? _interpreter;
+  static tfl.Interpreter? _interpreter;
   static String? _loadedModelPath;
 
   /// Run TFLite encoder inference.
   /// Input: PNG bytes (any size, white background black strokes).
   /// Output: List<double> of length [dim], or null on error / no model.
   static Future<List<double>?> encode(Uint8List pngBytes) async {
-    return null;
+    if (!hasImportedModel()) return null;
+    try {
+      // Re-load interpreter only when model path changed.
+      if (_interpreter == null || _loadedModelPath != _localModelPath) {
+        _interpreter?.close();
+        _interpreter = tfl.Interpreter.fromFile(
+          File(_localModelPath!),
+          options: tfl.InterpreterOptions()..threads = 2,
+        );
+        _loadedModelPath = _localModelPath;
+      }
+
+      // ── Preprocess: decode PNG → grayscale 64×64 float32 ─────────────────
+      final codec = await ui.instantiateImageCodec(
+        pngBytes,
+        targetWidth: 64,
+        targetHeight: 64,
+      );
+      final frame = await codec.getNextFrame();
+      final byteData =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      frame.image.dispose();
+      if (byteData == null) return null;
+
+      // RGBA → grayscale float32, normalize to [0, 1].
+      // The canvas is white-background / black-stroke, so we invert so that
+      // ink = 1.0 and background = 0.0 (typical for handwriting models).
+      final rgba = byteData.buffer.asUint8List();
+      final input = List.generate(
+        64 * 64,
+        (i) {
+          final r = rgba[i * 4];
+          final g = rgba[i * 4 + 1];
+          final b = rgba[i * 4 + 2];
+          final gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+          return 1.0 - gray; // invert: ink → 1, background → 0
+        },
+      );
+
+      // Shape: [1, 64, 64, 1]
+      final inputTensor = [
+        List.generate(
+            64, (row) => List.generate(64, (col) => [input[row * 64 + col]]))
+      ];
+
+      // Output: [1, dim]
+      final outputTensor = List.generate(1, (_) => List.filled(dim, 0.0));
+
+      _interpreter!.run(inputTensor, outputTensor);
+
+      return List<double>.from(outputTensor[0]);
+    } catch (e) {
+      debugPrint('[EmbeddingEncoder.encode] $e');
+      // Invalidate cached interpreter so next call retries a fresh load.
+      _interpreter?.close();
+      _interpreter = null;
+      _loadedModelPath = null;
+      return null;
+    }
   }
 
   /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
