@@ -860,16 +860,98 @@ class _Body extends StatelessWidget {
       return Column(children: [
         const _TopPanel(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const Expanded(flex: 9, child: _DrawCanvas()),
+        const Expanded(child: _DrawCanvas()),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
         const _BottomBar(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        Expanded(flex: 1, child: _InfoArea()),
+        const _MobileInfoBar(),
       ]);
     });
   }
 }
 
+class _MobileInfoBar extends StatelessWidget {
+  const _MobileInfoBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+
+    // Khi đã pin chữ → hiện info của pinned entry
+    if (state.pinnedEntry != null) {
+      final entry = state.pinnedEntry!;
+      return Container(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(entry.vocabulary,
+                style: const TextStyle(
+                    color: kAccent,
+                    fontSize: 36,
+                    fontWeight: FontWeight.w200,
+                    height: 1)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (entry.pinyin != null)
+                    Text(entry.pinyin!,
+                        style: const TextStyle(
+                            color: kTextPrimary,
+                            fontSize: 13,
+                            letterSpacing: 0.3)),
+                  const SizedBox(height: 2),
+                  Wrap(spacing: 4, runSpacing: 2, children: [
+                    if (entry.levelCode != null) _Tag(entry.levelCode!),
+                    if (entry.partOfSpeech != null) _Tag(entry.partOfSpeech!),
+                  ]),
+                ],
+              ),
+            ),
+            _SearchBtn(char: entry.vocabulary),
+          ],
+        ),
+      );
+    }
+
+    // Khi chưa pin → hiện top candidate nếu có
+    if (state.realtimeCandidates.isNotEmpty) {
+      final top = state.realtimeCandidates.first;
+      final pct = (top.score * 100).round();
+      final topColor = pct >= 80
+          ? kSuccess
+          : pct >= 60
+              ? kAccent
+              : kTextSecondary;
+      return Container(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(top.vocabulary,
+                style: TextStyle(
+                    color: topColor,
+                    fontSize: 36,
+                    fontWeight: FontWeight.w200,
+                    height: 1)),
+            const SizedBox(width: 8),
+            Text('$pct%',
+                style: TextStyle(
+                    color: topColor, fontSize: 11, letterSpacing: 0.3)),
+            const SizedBox(width: 12),
+            _SearchBtn(char: top.vocabulary),
+          ],
+        ),
+      );
+    }
+
+    // Trống
+    return const SizedBox.shrink();
+  }
+}
 // ── Top panel ─────────────────────────────────────────────────────────────────
 
 class _TopPanel extends StatelessWidget {
