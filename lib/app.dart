@@ -53,23 +53,26 @@ class _MainScreenState extends State<_MainScreen> {
       return Scaffold(
         backgroundColor: kBg,
         body: Center(
-            child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Text(state.initError!,
-              style: const TextStyle(color: kError, fontSize: 11),
-              textAlign: TextAlign.center),
-        )),
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Text(state.initError!,
+                style: const TextStyle(color: kError, fontSize: 11),
+                textAlign: TextAlign.center),
+          ),
+        ),
       );
     }
     if (!state.ready) {
       return const Scaffold(
         backgroundColor: kBg,
         body: Center(
-            child: SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: kAccentDim),
-        )),
+          child: SizedBox(
+            width: 16,
+            height: 16,
+            child:
+                CircularProgressIndicator(strokeWidth: 1.5, color: kAccentDim),
+          ),
+        ),
       );
     }
     return const Scaffold(
@@ -88,7 +91,6 @@ class _Body extends StatelessWidget {
     return LayoutBuilder(builder: (ctx, c) {
       final isWide = c.maxWidth > 600;
       if (isWide) {
-        // Wide: left = top-panel + canvas, right = info area
         return Row(children: [
           Expanded(
             flex: 5,
@@ -102,7 +104,6 @@ class _Body extends StatelessWidget {
           Expanded(flex: 4, child: _InfoArea()),
         ]);
       }
-      // Narrow: top panel → canvas → info
       return Column(children: [
         const _TopPanel(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
@@ -114,22 +115,19 @@ class _Body extends StatelessWidget {
   }
 }
 
-// ── Top panel: search + controls ─────────────────────────────────────────────
+// ── Top panel ─────────────────────────────────────────────────────────────────
 
 class _TopPanel extends StatelessWidget {
   const _TopPanel();
-
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _SearchBar(),
-        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        _CanvasControls(),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const _SearchBar(),
+          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+          _CanvasControls(),
+        ],
+      );
 }
 
 // ── Canvas area ───────────────────────────────────────────────────────────────
@@ -137,8 +135,13 @@ class _TopPanel extends StatelessWidget {
 class _CanvasArea extends StatelessWidget {
   const _CanvasArea();
   @override
-  Widget build(BuildContext context) => const _DrawCanvas();
+  Widget build(BuildContext context) => const Column(children: [
+        Expanded(child: _DrawCanvas()),
+        _LearningFeedback(),
+      ]);
 }
+
+// ── Draw canvas ───────────────────────────────────────────────────────────────
 
 class _DrawCanvas extends StatelessWidget {
   const _DrawCanvas();
@@ -190,11 +193,7 @@ class _CanvasPainter extends CustomPainter {
   final bool showPinnedTemplate;
 
   _CanvasPainter(
-    this.canvas,
-    this.hint,
-    this.strokeWidth,
-    this.showPinnedTemplate,
-  );
+      this.canvas, this.hint, this.strokeWidth, this.showPinnedTemplate);
 
   @override
   void paint(Canvas c, Size sz) {
@@ -220,10 +219,7 @@ class _CanvasPainter extends CustomPainter {
         ..strokeWidth = 1,
     );
 
-    final shouldShowHint =
-        hint != null && (showPinnedTemplate || !canvas.hasStrokes);
-
-    if (shouldShowHint) {
+    if (hint != null && (showPinnedTemplate || !canvas.hasStrokes)) {
       final tp = TextPainter(
         text: TextSpan(
           text: hint,
@@ -235,12 +231,9 @@ class _CanvasPainter extends CustomPainter {
           ),
         ),
         textDirection: TextDirection.ltr,
-      );
-      tp.layout();
+      )..layout();
       tp.paint(
-        c,
-        Offset((sz.width - tp.width) / 2, (sz.height - tp.height) / 2),
-      );
+          c, Offset((sz.width - tp.width) / 2, (sz.height - tp.height) / 2));
     }
 
     final ink = Paint()
@@ -268,9 +261,7 @@ class _CanvasPainter extends CustomPainter {
       c.drawPath(path, ink);
     }
 
-    for (final s in canvas.strokes) {
-      draw(s);
-    }
+    for (final s in canvas.strokes) draw(s);
     if (canvas.active != null) draw(canvas.active!);
   }
 
@@ -290,54 +281,172 @@ class _CanvasControls extends StatelessWidget {
     final state = context.watch<AppState>();
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-      child: Row(
-        children: [
-          // Action buttons
-          _Btn(
-              label: 'undo',
-              enabled: state.canvas.canUndo,
-              onTap: () => context.read<AppState>().undo()),
-          const SizedBox(width: 6),
-          _Btn(
-              label: 'clear',
-              enabled: state.canvas.hasStrokes,
-              onTap: () => context.read<AppState>().clear()),
-          const SizedBox(width: 6),
-          _Btn(
-            label: state.showPinnedTemplate ? 'tmpl ●' : 'tmpl',
-            enabled: state.pinnedEntry != null,
-            onTap: () => context.read<AppState>().togglePinnedTemplate(),
-          ),
-          const SizedBox(width: 6),
-          _Btn(
-            label: state.busy ? '…' : 'check',
-            enabled: state.canCheck,
-            accent: true,
-            onTap: () => context.read<AppState>().recognize(),
-          ),
-          const SizedBox(width: 10),
-          // Stroke width slider
-          const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
-          Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                activeTrackColor: kAccent.withOpacity(0.6),
-                inactiveTrackColor: kBorder,
-                thumbColor: kAccent,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                trackHeight: 1.5,
-                overlayShape: SliderComponentShape.noOverlay,
-              ),
-              child: Slider(
-                value: state.strokeWidth,
-                min: 4.0,
-                max: 24.0,
-                onChanged: (v) => context.read<AppState>().setStrokeWidth(v),
-              ),
+      child: Row(children: [
+        _Btn(
+          label: 'undo',
+          enabled: state.canvas.canUndo,
+          onTap: () => context.read<AppState>().undo(),
+        ),
+        const SizedBox(width: 6),
+        _Btn(
+          label: 'clear',
+          enabled: state.canvas.hasStrokes,
+          onTap: () => context.read<AppState>().clear(),
+        ),
+        const SizedBox(width: 6),
+        _Btn(
+          label: state.showPinnedTemplate ? 'tmpl ●' : 'tmpl',
+          enabled: state.pinnedEntry != null,
+          onTap: () => context.read<AppState>().togglePinnedTemplate(),
+        ),
+        const SizedBox(width: 6),
+        _Btn(
+          label: state.busy ? '…' : 'check',
+          enabled: state.canCheck,
+          accent: true,
+          onTap: () => context.read<AppState>().recognize(),
+        ),
+        const SizedBox(width: 10),
+        const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: kAccent.withOpacity(0.6),
+              inactiveTrackColor: kBorder,
+              thumbColor: kAccent,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              trackHeight: 1.5,
+              overlayShape: SliderComponentShape.noOverlay,
+            ),
+            child: Slider(
+              value: state.strokeWidth,
+              min: 4.0,
+              max: 24.0,
+              onChanged: (v) => context.read<AppState>().setStrokeWidth(v),
             ),
           ),
-          const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
-        ],
+        ),
+        const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
+      ]),
+    );
+  }
+}
+
+// ── Learning Feedback ─────────────────────────────────────────────────────────
+
+class _LearningFeedback extends StatelessWidget {
+  const _LearningFeedback();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    if (!state.showPinnedTemplate || state.pinnedEntry == null) {
+      return const SizedBox.shrink();
+    }
+
+    return FutureBuilder<Map<String, dynamic>>(
+      future: DbService.getVocabStats(state.pinnedEntry!.vocabulary),
+      builder: (ctx, snap) {
+        if (!snap.hasData) return const SizedBox.shrink();
+        final stats = snap.data!;
+        final practiceCount = stats['practice_count'] as int;
+        final sampleCount = stats['sample_count'] as int;
+        final accuracy = stats['ocr_accuracy'] as double;
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: Row(children: [
+            _StatChip(
+              label: '練習',
+              value: '$practiceCount 次',
+              highlight: practiceCount >= 10,
+            ),
+            const SizedBox(width: 6),
+            if (sampleCount > 0) _StatChip(label: '樣本', value: '$sampleCount'),
+            const SizedBox(width: 6),
+            if (sampleCount >= 3)
+              _StatChip(
+                label: 'OCR',
+                value: '${(accuracy * 100).round()}%',
+                highlight: accuracy >= 0.8,
+                isWarning: accuracy < 0.5,
+              ),
+            const Spacer(),
+            if (state.similarityResult != null)
+              _SimilarityBadge(result: state.similarityResult!),
+          ]),
+        );
+      },
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  final String label, value;
+  final bool highlight, isWarning;
+
+  const _StatChip({
+    required this.label,
+    required this.value,
+    this.highlight = false,
+    this.isWarning = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isWarning
+        ? kError
+        : highlight
+            ? kSuccess
+            : kTextMuted;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: RichText(
+        text: TextSpan(children: [
+          TextSpan(
+            text: '$label ',
+            style: const TextStyle(
+                color: kTextMuted, fontSize: 9, letterSpacing: 0.5),
+          ),
+          TextSpan(
+            text: value,
+            style: TextStyle(
+              color: color,
+              fontSize: 9,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _SimilarityBadge extends StatelessWidget {
+  final SimilarityResult result;
+  const _SimilarityBadge({required this.result});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = result.isConsistent
+        ? kSuccess
+        : result.isGood
+            ? kAccent
+            : kError;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        border: Border.all(color: color.withOpacity(0.4)),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        result.feedback,
+        style: TextStyle(color: color, fontSize: 9, letterSpacing: 0.3),
       ),
     );
   }
@@ -442,11 +551,8 @@ class _SearchBarState extends State<_SearchBar> {
                 final e = state.searchSuggestions[i];
                 return GestureDetector(
                   onTap: () {
-                    // ① Ẩn bàn phím ngay lập tức
                     _dismissKeyboard();
-                    // ② Xoá text field
                     _ctrl.clear();
-                    // ③ Cập nhật state
                     context.read<AppState>().selectSuggestion(e);
                   },
                   child: Container(
@@ -464,19 +570,20 @@ class _SearchBarState extends State<_SearchBar> {
                               fontWeight: FontWeight.w200)),
                       const SizedBox(width: 10),
                       Expanded(
-                          child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (e.pinyin != null)
-                            Text(e.pinyin!,
-                                style: const TextStyle(
-                                    color: kTextPrimary, fontSize: 12)),
-                          if (e.levelCode != null)
-                            Text(e.levelCode!,
-                                style: const TextStyle(
-                                    color: kTextMuted, fontSize: 10)),
-                        ],
-                      )),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (e.pinyin != null)
+                              Text(e.pinyin!,
+                                  style: const TextStyle(
+                                      color: kTextPrimary, fontSize: 12)),
+                            if (e.levelCode != null)
+                              Text(e.levelCode!,
+                                  style: const TextStyle(
+                                      color: kTextMuted, fontSize: 10)),
+                          ],
+                        ),
+                      ),
                     ]),
                   ),
                 );
@@ -495,7 +602,6 @@ class _InfoArea extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-
     if (state.pinnedEntry != null) {
       return SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -507,7 +613,6 @@ class _InfoArea extends StatelessWidget {
         ),
       );
     }
-
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: const _ResultArea(),
@@ -520,23 +625,19 @@ class _ResultArea extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-
     if (state.busy) {
       return const Text('辨識中…',
           style: TextStyle(color: kTextSecondary, fontSize: 12));
     }
-
     final r = state.result;
     if (r == null) {
       return const Text('畫字後按 check',
           style: TextStyle(color: kTextMuted, fontSize: 12, letterSpacing: 1));
     }
-
     if (r.error != null) {
       return Text(r.error!,
           style: const TextStyle(color: kError, fontSize: 11));
     }
-
     if (r.matches.isEmpty) {
       if (r.raw.isEmpty) {
         return const Text('沒有辨識結果',
@@ -551,7 +652,6 @@ class _ResultArea extends StatelessWidget {
             style: const TextStyle(color: kTextSecondary, fontSize: 20)),
       ]);
     }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: r.matches
@@ -582,30 +682,33 @@ class _EntryCard extends StatelessWidget {
                   height: 1)),
           const SizedBox(width: 14),
           Expanded(
-              child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (entry.pinyin != null)
-                Text(entry.pinyin!,
-                    style: const TextStyle(
-                        color: kTextPrimary, fontSize: 16, letterSpacing: 0.5)),
-              if (entry.bopomofo != null)
-                Text(entry.bopomofo!,
-                    style:
-                        const TextStyle(color: kTextSecondary, fontSize: 13)),
-              const SizedBox(height: 4),
-              Wrap(spacing: 6, runSpacing: 4, children: [
-                if (entry.levelCode != null) _Tag(entry.levelCode!),
-                if (entry.context != null) _Tag(entry.context!),
-                if (entry.partOfSpeech != null) _Tag(entry.partOfSpeech!),
-              ]),
-              if (entry.variantGroup != null) ...[
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (entry.pinyin != null)
+                  Text(entry.pinyin!,
+                      style: const TextStyle(
+                          color: kTextPrimary,
+                          fontSize: 16,
+                          letterSpacing: 0.5)),
+                if (entry.bopomofo != null)
+                  Text(entry.bopomofo!,
+                      style:
+                          const TextStyle(color: kTextSecondary, fontSize: 13)),
                 const SizedBox(height: 4),
-                Text('異體字 ${entry.variantGroup!}',
-                    style: const TextStyle(color: kTextMuted, fontSize: 10)),
+                Wrap(spacing: 6, runSpacing: 4, children: [
+                  if (entry.levelCode != null) _Tag(entry.levelCode!),
+                  if (entry.context != null) _Tag(entry.context!),
+                  if (entry.partOfSpeech != null) _Tag(entry.partOfSpeech!),
+                ]),
+                if (entry.variantGroup != null) ...[
+                  const SizedBox(height: 4),
+                  Text('異體字 ${entry.variantGroup!}',
+                      style: const TextStyle(color: kTextMuted, fontSize: 10)),
+                ],
               ],
-            ],
-          )),
+            ),
+          ),
         ]),
         if (showStrokeOrder) ...[
           const SizedBox(height: 8),
@@ -629,7 +732,6 @@ class _StrokeOrderBtn extends StatelessWidget {
     final c = char.isNotEmpty ? char.characters.first : char;
     final url =
         'https://stroke-order.learningweb.moe.edu.tw/charactersQueryResult.do?words=$c';
-
     return GestureDetector(
       onTap: () async {
         final uri = Uri.parse(url);
