@@ -522,6 +522,9 @@ class _LearningFeedback extends StatelessWidget {
                 isWarning: accuracy < 0.5,
               ),
             const Spacer(),
+            if (state.matchSource != MatchSource.none)
+              _MatchSourceBadge(source: state.matchSource),
+            const SizedBox(width: 6),
             if (state.similarityResult != null)
               _SimilarityBadge(result: state.similarityResult!),
           ]),
@@ -573,6 +576,27 @@ class _StatChip extends StatelessWidget {
           ),
         ]),
       ),
+    );
+  }
+}
+
+class _MatchSourceBadge extends StatelessWidget {
+  final MatchSource source;
+  const _MatchSourceBadge({required this.source});
+
+  @override
+  Widget build(BuildContext context) {
+    final isProto = source == MatchSource.proto;
+    final label = isProto ? '原型' : 'OCR';
+    final color = isProto ? kSuccess : kTextSecondary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        border: Border.all(color: color.withOpacity(0.5)),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(label,
+          style: TextStyle(color: color, fontSize: 9, letterSpacing: 0.5)),
     );
   }
 }

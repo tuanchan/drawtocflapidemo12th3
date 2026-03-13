@@ -138,15 +138,19 @@ class VocabEntry {
   }
 }
 
+enum MatchSource { proto, ocr, none }
+
 class RecResult {
   final List<VocabEntry> matches;
   final List<String> raw;
   final String? error;
+  final MatchSource matchSource;
 
   const RecResult({
     this.matches = const [],
     this.raw = const [],
     this.error,
+    this.matchSource = MatchSource.none,
   });
 }
 
@@ -159,22 +163,25 @@ class ToastMessage {
   final int embeddingCount;
   final ToastStatus status;
   final bool protoUpdated;
+  final bool matchedByProto;
 
   const ToastMessage({
     required this.char,
     required this.embeddingCount,
     required this.status,
     this.protoUpdated = false,
+    this.matchedByProto = false,
   });
 
   String get statusLabel {
+    final matchTag = matchedByProto ? '原型匹配' : 'OCR';
     switch (status) {
       case ToastStatus.saved:
-        return protoUpdated ? '嵌入已儲存 · prototype ✓' : '嵌入已儲存';
+        return '$matchTag · 嵌入已儲存${protoUpdated ? ' · ✓' : ''}';
       case ToastStatus.savedFallback:
-        return 'rule-based 儲存';
+        return '$matchTag · rule-based 儲存';
       case ToastStatus.noModel:
-        return '未載入模型 · rule-based';
+        return '$matchTag · 未載入模型';
       case ToastStatus.dbError:
         return 'DB 寫入失敗';
     }
@@ -995,6 +1002,7 @@ class AppState extends ChangeNotifier {
   bool _showPinnedTemplate = false;
 
   SimilarityResult? _similarityResult;
+  MatchSource _matchSource = MatchSource.none;
 
   /// One-shot toast fired after an embedding is saved.
   /// UI should read and then call [consumeToast].
@@ -1013,6 +1021,7 @@ class AppState extends ChangeNotifier {
   bool get showPinnedTemplate => _showPinnedTemplate;
   SimilarityResult? get similarityResult => _similarityResult;
   ToastMessage? get pendingToast => _pendingToast;
+  MatchSource get matchSource => _matchSource;
 
   /// Called by the UI after it has displayed the toast.
   void consumeToast() {
@@ -1069,6 +1078,7 @@ class AppState extends ChangeNotifier {
     _canvas = _canvas.clear();
     _result = null;
     _similarityResult = null;
+    _matchSource = MatchSource.none;
     notifyListeners();
   }
 
@@ -1108,75 +1118,116 @@ class AppState extends ChangeNotifier {
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
 
-    if (!_isIOS) {
-      _result = const RecResult(
-          error: 'Bản Vision OCR này chỉ chạy trên iPhone/iOS.');
-      notifyListeners();
-      return;
-    }
-
     _busy = true;
     _result = null;
     _similarityResult = null;
+    _matchSource = MatchSource.none;
     notifyListeners();
 
     try {
+      // ── Step 1: Render PNG ───────────────────────────────────────────────
       final pngBytes = await CanvasRenderService.renderPngBytes(
         _canvas.strokes,
         strokeWidth: _strokeWidth,
       );
 
-      // ── Encode ONCE — reused for inject + onCheck + toast ────────────────
+      // ── Step 2: Encode ONCE ──────────────────────────────────────────────
       final List<double>? tflEmb = await EmbeddingEncoder.encode(pngBytes);
       final bool isFallback = tflEmb == null;
       final List<double> embedding =
           tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
 
-      final raw = await VisionOcrService.recognizeCanvasPng(
-        pngBytes,
-        maxCandidates: kTopK,
-      );
+      // ── Step 3: Proto-first decision ─────────────────────────────────────
+      bool matchedByProto = false;
+      List<String> raw = const [];
+      List<VocabEntry> matches = const [];
 
-      // ── Prototype-based inject when OCR misses the pinned character ───────
-      VocabEntry? featureInjected;
       if (_showPinnedTemplate && _pinnedEntry != null) {
-        final sim = await PrototypeService.computeSimilarity(
+        final count =
+            await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
+        final simBefore = await PrototypeService.computeSimilarity(
           vocabulary: _pinnedEntry!.vocabulary,
           embedding: embedding,
         );
-        if (sim != null) {
-          final count =
-              await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
-          final thresh = count >= 7 ? 0.55 : 0.60;
-          if (sim >= thresh) featureInjected = _pinnedEntry;
+
+        // Count-adaptive threshold: more samples → lower bar
+        final protoThresh = count >= 10
+            ? 0.58
+            : count >= 5
+                ? 0.65
+                : 0.75;
+
+        if (simBefore != null && simBefore >= protoThresh) {
+          // ── PROTO MATCH: skip OCR ───────────────────────────────────────
+          matchedByProto = true;
+          matches = [_pinnedEntry!];
+          _matchSource = MatchSource.proto;
         }
       }
 
-      if (raw.isEmpty && featureInjected == null) {
-        _result = const RecResult(raw: []);
-        return;
+      if (!matchedByProto) {
+        // ── FALLBACK: call OCR ──────────────────────────────────────────────
+        if (!_isIOS) {
+          _result = const RecResult(
+            error: 'Vision OCR chỉ chạy trên iPhone/iOS.',
+            matchSource: MatchSource.none,
+          );
+          return;
+        }
+
+        raw = await VisionOcrService.recognizeCanvasPng(
+          pngBytes,
+          maxCandidates: kTopK,
+        );
+
+        // Soft-inject pinned entry if OCR missed it but sim is close
+        VocabEntry? softInjected;
+        if (_showPinnedTemplate && _pinnedEntry != null && raw.isNotEmpty) {
+          final sim = await PrototypeService.computeSimilarity(
+            vocabulary: _pinnedEntry!.vocabulary,
+            embedding: embedding,
+          );
+          final count =
+              await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
+          final injectThresh = count >= 7 ? 0.50 : 0.55;
+          if (sim != null &&
+              sim >= injectThresh &&
+              !raw.contains(_pinnedEntry!.vocabulary)) {
+            softInjected = _pinnedEntry;
+          }
+        }
+
+        if (raw.isEmpty && softInjected == null) {
+          _result = const RecResult(
+            raw: [],
+            matchSource: MatchSource.ocr,
+          );
+          return;
+        }
+
+        final tokens = _buildLookupTokens(raw);
+        final ocrMatches = await DbService.findByVocabularyTokens(tokens);
+        final vocabs = ocrMatches.map((e) => e.vocabulary).toList();
+        final boosts = await LocalLearningService.getBoostScores(vocabs);
+
+        if (softInjected != null &&
+            !ocrMatches.any((e) => e.vocabulary == softInjected!.vocabulary)) {
+          final sortedTail =
+              _sortMatchesByCandidateOrder(ocrMatches, raw, boosts);
+          matches = [softInjected!, ...sortedTail];
+        } else {
+          matches = _sortMatchesByCandidateOrder(ocrMatches, raw, boosts);
+        }
+        _matchSource = MatchSource.ocr;
       }
 
-      final tokens = _buildLookupTokens(raw);
-      var matches = await DbService.findByVocabularyTokens(tokens);
+      _result = RecResult(
+        matches: matches,
+        raw: raw,
+        matchSource: _matchSource,
+      );
 
-      if (featureInjected != null &&
-          !matches.any((e) => e.vocabulary == featureInjected!.vocabulary)) {
-        matches = [featureInjected!, ...matches];
-      }
-
-      final vocabs = matches.map((e) => e.vocabulary).toList();
-      final boosts = await LocalLearningService.getBoostScores(vocabs);
-      final sortedTail = featureInjected != null
-          ? _sortMatchesByCandidateOrder(matches.skip(1).toList(), raw, boosts)
-          : _sortMatchesByCandidateOrder(matches, raw, boosts);
-      matches = featureInjected != null
-          ? [featureInjected!, ...sortedTail]
-          : sortedTail;
-
-      _result = RecResult(matches: matches, raw: raw);
-
-      // ── Local learning: save embedding + update prototype + toast ─────────
+      // ── Step 4: Save embedding + update prototype (always, after result) ──
       if (_showPinnedTemplate && _pinnedEntry != null) {
         final checkResult = await LocalLearningService.onCheck(
           vocabulary: _pinnedEntry!.vocabulary,
@@ -1193,6 +1244,7 @@ class AppState extends ChangeNotifier {
           embeddingCount: checkResult.embeddingCount,
           status: checkResult.toastStatus,
           protoUpdated: checkResult.protoUpdated,
+          matchedByProto: matchedByProto,
         );
       }
     } catch (e, st) {
