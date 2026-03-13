@@ -1832,6 +1832,7 @@ class AppState extends ChangeNotifier {
   // ── Realtime proto-match state ────────────────────────────────────────────
   List<ProtoMatchCandidate> _realtimeCandidates = const [];
   bool _realtimeBusy = false;
+  bool _realtimePending = false;
   Timer? _realtimeDebounce;
   // 'proto' | 'labels_fallback' | 'none'
   String _realtimeSource = 'none';
@@ -2108,10 +2109,14 @@ class AppState extends ChangeNotifier {
   // ── Realtime proto compare ────────────────────────────────────────────────
 
   Future<void> _runRealtimeCompare() async {
-    if (_realtimeBusy) return;
-    if (_canvas.strokes.isEmpty) return;
+    if (_realtimeBusy) {
+      _realtimePending = true;
+      return;
+    }
+    _realtimePending = false;
     _realtimeBusy = true;
     try {
+      if (_canvas.strokes.isEmpty) return;
       final protos = await DbService.getAllPrototypes();
       if (protos.isNotEmpty) {
         final pngBytes = await CanvasRenderService.renderPngBytes(
@@ -2120,7 +2125,6 @@ class AppState extends ChangeNotifier {
         );
         final tflEmb = await EmbeddingEncoder.encode(pngBytes);
         final embedding = tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
-
         final candidates = <ProtoMatchCandidate>[];
         for (final row in protos) {
           try {
@@ -2139,7 +2143,6 @@ class AppState extends ChangeNotifier {
         _realtimeCandidates = candidates.take(5).toList();
         _realtimeSource = 'proto';
       } else {
-        // No local prototypes — show honest state, no fake candidates.
         _realtimeCandidates = const [];
         _realtimeSource = EmbeddingEncoder.hasImportedModel()
             ? 'model_no_prototypes'
@@ -2150,6 +2153,10 @@ class AppState extends ChangeNotifier {
     } finally {
       _realtimeBusy = false;
       notifyListeners();
+      if (_realtimePending) {
+        _realtimePending = false;
+        _runRealtimeCompare();
+      }
     }
   }
 
