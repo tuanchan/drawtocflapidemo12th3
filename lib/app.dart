@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logic.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
 
 const kBg = Color(0xFF0A0A0A);
 const kSurface = Color(0xFF141414);
@@ -232,6 +234,90 @@ class _SettingsSheetState extends State<_SettingsSheet> {
       autoDeleteAfterUpload: _autoDelete,
     );
     await appState.updateSettings(updated);
+  }
+
+  Future<void> _exportPrototypes() async {
+    setState(() {
+      _loading = true;
+      _statusMsg = null;
+    });
+    String? tempPath;
+    try {
+      tempPath = await context.read<AppState>().exportPrototypesToTemp();
+      if (tempPath == null) {
+        setState(() {
+          _isOk = false;
+          _statusMsg = 'export failed';
+        });
+        return;
+      }
+      final result = await Share.shareXFiles(
+        [XFile(tempPath)],
+        subject: 'Prototypes backup',
+      );
+      setState(() {
+        _isOk = true;
+        _statusMsg = result.status == ShareResultStatus.dismissed
+            ? 'cancelled'
+            : 'shared successfully';
+      });
+    } catch (e) {
+      setState(() {
+        _isOk = false;
+        _statusMsg = 'export failed: $e';
+      });
+    } finally {
+      if (tempPath != null) {
+        try {
+          File(tempPath).deleteSync();
+        } catch (_) {}
+      }
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _importPrototypes() async {
+    setState(() {
+      _loading = true;
+      _statusMsg = null;
+    });
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (picked == null || picked.files.single.path == null) {
+        setState(() {
+          _loading = false;
+          _statusMsg = 'cancelled';
+          _isOk = false;
+        });
+        return;
+      }
+      final result = await context
+          .read<AppState>()
+          .importPrototypesFromFile(picked.files.single.path!);
+      setState(() {
+        _isOk = result?.success ?? false;
+        _statusMsg = result == null
+            ? 'import failed'
+            : result.success
+                ? 'merged ${result.mergedPrototypes} protos · '
+                    'added ${result.addedEmbeddings} embeddings'
+                : 'import failed: ${result.errorMsg}';
+      });
+    } catch (e) {
+      setState(() {
+        _isOk = false;
+        _statusMsg = 'import failed: $e';
+      });
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _testConnection() async {
@@ -472,6 +558,24 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                       label: 'Clear local samples',
                       enabled: true,
                       onTap: _clearLocalSamples)),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(
+                child: _SheetBtn(
+                  label: _loading ? '…' : 'Export prototypes',
+                  enabled: !_loading,
+                  onTap: _exportPrototypes,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SheetBtn(
+                  label: _loading ? '…' : 'Import prototypes',
+                  enabled: !_loading,
+                  onTap: _importPrototypes,
+                ),
+              ),
             ]),
             const SizedBox(height: 12),
             if (_statusMsg != null)

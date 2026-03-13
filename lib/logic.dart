@@ -1880,6 +1880,27 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Future<String?> exportPrototypesToTemp() async {
+    try {
+      return await PrototypeBackupService.exportToTemp();
+    } catch (e) {
+      debugPrint('[exportPrototypes] $e');
+      return null;
+    }
+  }
+
+  Future<PrototypeImportResult?> importPrototypesFromFile(
+      String filePath) async {
+    try {
+      final result = await PrototypeBackupService.importFromFile(filePath);
+      notifyListeners();
+      return result;
+    } catch (e) {
+      debugPrint('[importPrototypes] $e');
+      return null;
+    }
+  }
+
   /// Re-activates EmbeddingEncoder from persisted paths if files still exist.
   Future<void> _restoreLocalModel() async {
     final paths = await SettingsService.loadModelPaths();
@@ -2304,5 +2325,131 @@ class AppState extends ChangeNotifier {
     _searchDebounce?.cancel();
     _realtimeDebounce?.cancel();
     super.dispose();
+  }
+}
+// ── Prototype Backup Service ──────────────────────────────────────────────────
+
+class PrototypeImportResult {
+  final bool success;
+  final int mergedPrototypes;
+  final int addedEmbeddings;
+  final String? errorMsg;
+
+  const PrototypeImportResult({
+    required this.success,
+    this.mergedPrototypes = 0,
+    this.addedEmbeddings = 0,
+    this.errorMsg,
+  });
+}
+
+class PrototypeBackupService {
+  static Future<String> exportToTemp() async {
+    final dir = await getTemporaryDirectory();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final path = p.join(dir.path, 'prototypes_$ts.json');
+
+    final protos = await DbService.getAllPrototypes();
+    final embRows = await DbService.db.rawQuery(
+      'SELECT vocabulary, embedding_json, is_fallback, created_at '
+      'FROM $kTableEmbeddings ORDER BY created_at ASC',
+    );
+
+    final protoMap = <String, dynamic>{};
+    for (final row in protos) {
+      protoMap[row['vocabulary'] as String] = {
+        'prototype': jsonDecode(row['prototype_json'] as String),
+        'count': row['count'],
+      };
+    }
+
+    final data = {
+      'version': 1,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'prototypes': protoMap,
+      'embeddings': embRows
+          .map((r) => {
+                'vocabulary': r['vocabulary'],
+                'embeddingJson': r['embedding_json'],
+                'isFallback': r['is_fallback'],
+                'createdAt': r['created_at'],
+              })
+          .toList(),
+    };
+
+    await File(path).writeAsString(jsonEncode(data), flush: true);
+    return path;
+  }
+
+  static Future<PrototypeImportResult> importFromFile(String filePath) async {
+    final raw = await File(filePath).readAsString();
+    final data = jsonDecode(raw) as Map<String, dynamic>;
+
+    if ((data['version'] as int?) != 1) {
+      return const PrototypeImportResult(
+          success: false, errorMsg: 'unsupported version');
+    }
+
+    int mergedProtos = 0;
+    int addedEmbeddings = 0;
+
+    final protos = data['prototypes'] as Map<String, dynamic>? ?? {};
+    for (final entry in protos.entries) {
+      final vocab = entry.key;
+      final incoming = entry.value as Map<String, dynamic>;
+      final incomingCount = (incoming['count'] as num).toInt();
+      final incomingProto = (incoming['prototype'] as List)
+          .map((e) => (e as num).toDouble())
+          .toList();
+
+      final existing = await DbService.getPrototype(vocab);
+
+      if (existing == null) {
+        await DbService.upsertPrototype(
+          vocabulary: vocab,
+          protoJson: jsonEncode(incomingProto),
+          count: incomingCount,
+        );
+      } else {
+        final existingCount = existing['count'] as int;
+        final existingVec =
+            (jsonDecode(existing['prototype_json'] as String) as List)
+                .map((e) => (e as num).toDouble())
+                .toList();
+        final totalCount = existingCount + incomingCount;
+        final merged = List.generate(
+          incomingProto.length,
+          (i) =>
+              (existingVec[i] * existingCount +
+                  incomingProto[i] * incomingCount) /
+              totalCount,
+        );
+        await DbService.upsertPrototype(
+          vocabulary: vocab,
+          protoJson: jsonEncode(merged),
+          count: totalCount,
+        );
+      }
+      mergedProtos++;
+    }
+
+    final embeddings = data['embeddings'] as List<dynamic>? ?? [];
+    for (final emb in embeddings) {
+      try {
+        await DbService.db.insert(kTableEmbeddings, {
+          'vocabulary': emb['vocabulary'],
+          'embedding_json': emb['embeddingJson'],
+          'is_fallback': emb['isFallback'] ?? 0,
+          'created_at': emb['createdAt'],
+        });
+        addedEmbeddings++;
+      } catch (_) {}
+    }
+
+    return PrototypeImportResult(
+      success: true,
+      mergedPrototypes: mergedProtos,
+      addedEmbeddings: addedEmbeddings,
+    );
   }
 }
