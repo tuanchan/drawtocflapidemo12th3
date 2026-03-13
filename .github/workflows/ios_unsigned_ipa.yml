@@ -24,12 +24,6 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      - name: Create iOS folder if missing
-        run: |
-          if [ ! -d "ios" ]; then
-            flutter create --platforms=ios .
-          fi
-
       - name: Flutter pub get
         run: flutter pub get
 
@@ -38,6 +32,15 @@ jobs:
 
       - name: Precache iOS artifacts
         run: flutter precache --ios
+
+      - name: Create iOS folder if missing
+        run: |
+          if [ ! -d "ios" ]; then
+            echo "ios folder missing — creating..."
+            flutter create --platforms=ios .
+          else
+            echo "ios folder exists ✅"
+          fi
 
       - name: Force iOS deployment target to 15.5
         run: |
@@ -49,9 +52,7 @@ jobs:
 
       - name: Install CocoaPods
         working-directory: ios
-        run: |
-          pod repo update
-          pod install --repo-update
+        run: pod install --repo-update
 
       - name: Flutter build iOS release (no codesign)
         run: flutter build ios --release --no-codesign
@@ -66,8 +67,7 @@ jobs:
           rm -rf Payload TocflWriter-unsigned.ipa
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/Runner.app
-          cd Payload && zip -r ../TocflWriter-unsigned.ipa Runner.app
-          cd ..
+          zip -r TocflWriter-unsigned.ipa Payload
           unzip -l TocflWriter-unsigned.ipa | head -100
 
       - name: Validate IPA structure
