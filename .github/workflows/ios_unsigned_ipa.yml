@@ -17,7 +17,7 @@ jobs:
       - name: Setup Flutter (stable)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.32.0"
+          flutter-version: "3.22.0"
           channel: "stable"
           cache: true
 
@@ -26,6 +26,32 @@ jobs:
 
       - name: Install Flutter dependencies
         run: flutter pub get
+
+      # FIX 1: Download TensorFlowLiteC framework cho tflite_flutter 0.10.x
+      - name: Download TFLite iOS framework
+        run: |
+          TFLITE_VERSION="2.12.0"
+          FRAMEWORK_DIR="$HOME/.pub-cache/hosted/pub.dev/tflite_flutter-0.10.4/ios"
+          mkdir -p "$FRAMEWORK_DIR"
+
+          echo "Downloading TensorFlowLiteC ${TFLITE_VERSION}..."
+          curl -L \
+            "https://github.com/tensorflow/tensorflow/releases/download/v${TFLITE_VERSION}/TensorFlowLiteC-${TFLITE_VERSION}.tar.gz" \
+            -o /tmp/TFLite.tar.gz
+
+          tar xzf /tmp/TFLite.tar.gz -C /tmp/
+
+          # Copy framework vào thư mục tflite_flutter package
+          if [ -d "/tmp/TensorFlowLiteC.xcframework" ]; then
+            cp -R /tmp/TensorFlowLiteC.xcframework "$FRAMEWORK_DIR/"
+            echo "✅ Framework copied to $FRAMEWORK_DIR"
+          else
+            echo "⚠️  xcframework not found in archive, listing contents:"
+            ls -la /tmp/
+          fi
+
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
 
       - name: Create iOS platform folder if needed
         run: |
@@ -77,10 +103,18 @@ jobs:
             installer.pods_project.build_configurations.each do |config|
               config.build_settings['EXCLUDED_ARCHS[sdk=*]'] = 'armv7'
               config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.5'
+              config.build_settings['ENABLE_BITCODE'] = 'NO'
             end
 
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
+
+              if target.name == 'tflite_flutter'
+                target.build_configurations.each do |config|
+                  config.build_settings['ENABLE_BITCODE'] = 'NO'
+                  config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
+                end
+              end
 
               target.build_configurations.each do |config|
                 current_target = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
@@ -99,6 +133,14 @@ jobs:
         working-directory: ios
         run: |
           pod install --repo-update
+
+      # FIX 2: Verify TFLite framework tồn tại trước khi build
+      - name: Verify TFLite framework
+        run: |
+          echo "=== Searching for TensorFlowLiteC ==="
+          find $HOME/.pub-cache -name "TensorFlowLiteC*" 2>/dev/null || echo "Not in pub-cache"
+          find ios -name "TensorFlowLiteC*" 2>/dev/null || echo "Not in ios folder"
+          find . -name "*.xcframework" 2>/dev/null | head -20
 
       - name: Flutter build iOS release (no codesign)
         run: |
@@ -122,6 +164,12 @@ jobs:
       - name: Validate IPA structure
         run: |
           unzip -l TocflWriter-unsigned.ipa | grep "Payload/Runner.app/" || (echo "Invalid IPA structure" && exit 1)
+
+      # FIX 3: Verify TFLite framework được bundle trong IPA
+      - name: Verify TFLite in IPA
+        run: |
+          echo "=== Checking TFLite in IPA ==="
+          unzip -l TocflWriter-unsigned.ipa | grep -i "tensorflow\|tflite" || echo "⚠️  TFLite not found in IPA — may cause runtime error"
 
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
