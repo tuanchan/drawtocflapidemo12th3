@@ -991,6 +991,10 @@ class EmbeddingEncoder {
     _localLabelsPath = labelsPath;
     _importedVersion = version;
     _importedAt = importedAt;
+    // Thêm 3 dòng này:
+    _interpreter?.close();
+    _interpreter = null;
+    _loadedModelPath = null;
   }
 
   // Cached interpreter — reused across calls until model path changes.
@@ -1258,6 +1262,7 @@ class ModelImportService {
   /// Only inserts rows that don't yet exist locally (does not overwrite
   /// prototypes the user has built via Check, because those are more recent).
   static Future<void> _seedPrototypesToDb(String jsonPath) async {
+    await DbService.db.delete(kTablePrototypes);
     final raw = jsonDecode(File(jsonPath).readAsStringSync());
 
     if (raw is Map<String, dynamic>) {
@@ -1270,14 +1275,11 @@ class ModelImportService {
               .toList();
           final count = (data['count'] as num?)?.toInt() ?? 1;
 
-          final existing = await DbService.getPrototype(vocab);
-          if (existing == null) {
-            await DbService.upsertPrototype(
-              vocabulary: vocab,
-              protoJson: jsonEncode(protoVec),
-              count: count,
-            );
-          }
+          await DbService.upsertPrototype(
+            vocabulary: vocab,
+            protoJson: jsonEncode(protoVec),
+            count: count,
+          );
         } catch (_) {}
       }
       return;
