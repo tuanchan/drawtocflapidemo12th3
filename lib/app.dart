@@ -711,11 +711,11 @@ class _Body extends StatelessWidget {
       return Column(children: [
         const _TopPanel(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const Expanded(flex: 7, child: _DrawCanvas()),
+        const Expanded(flex: 9, child: _DrawCanvas()),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
         const _BottomBar(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        Expanded(flex: 2, child: _InfoArea()),
+        Expanded(flex: 1, child: _InfoArea()),
       ]);
     });
   }
@@ -763,9 +763,16 @@ class _RealtimePredictionPanel extends StatelessWidget {
 
     if (!hasStrokes && candidates.isEmpty) return const SizedBox.shrink();
 
-    String emptyMsg = 'No local prototypes';
-    if (state.realtimeSource == 'labels_fallback') {
-      emptyMsg = 'Model loaded · draw to match';
+    String emptyMsg;
+    switch (state.realtimeSource) {
+      case 'model_no_prototypes':
+        emptyMsg = 'Model loaded · no local prototypes yet';
+        break;
+      case 'proto':
+        emptyMsg = '';
+        break;
+      default:
+        emptyMsg = 'No local prototypes';
     }
 
     return Container(
@@ -800,12 +807,6 @@ class _RealtimePredictionPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (state.realtimeSource == 'labels_fallback')
-                  const Padding(
-                    padding: EdgeInsets.only(left: 4),
-                    child: Text('~',
-                        style: TextStyle(color: kTextMuted, fontSize: 8)),
-                  ),
               ],
             ),
     );
