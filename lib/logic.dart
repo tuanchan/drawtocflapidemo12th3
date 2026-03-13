@@ -202,8 +202,6 @@ class HwrService {
     _labels = List<String>.from(jsonDecode(raw) as List);
     debugPrint('[HwrService] ${_labels.length} classes loaded');
 
-    final opts = InterpreterOptions()..threads = 2;
-
     try {
       final buffer = await rootBundle.load(kModelAsset);
       final bytes = buffer.buffer.asUint8List(
@@ -212,7 +210,7 @@ class HwrService {
       );
 
       debugPrint('[HwrService] model bytes: ${bytes.length}');
-      _interp = Interpreter.fromBuffer(bytes, options: opts);
+      _interp = Interpreter.fromBuffer(bytes);
 
       final inShape = _interp!.getInputTensor(0).shape;
       final outShape = _interp!.getOutputTensor(0).shape;
