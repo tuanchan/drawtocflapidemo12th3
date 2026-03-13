@@ -1709,7 +1709,7 @@ class _SearchBtn extends StatelessWidget {
             border: Border.all(color: kBorder),
             borderRadius: BorderRadius.circular(4)),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Text('Stroke order',
+          const Text('Search',
               style: TextStyle(
                   color: kTextSecondary, fontSize: 11, letterSpacing: 1)),
           const SizedBox(width: 6),
