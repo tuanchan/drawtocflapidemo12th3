@@ -502,22 +502,19 @@ class _LearningFeedback extends StatelessWidget {
       builder: (ctx, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
         final stats = snap.data!;
-        final practiceCount = stats['practice_count'] as int;
-        final sampleCount = stats['sample_count'] as int;
+        final embCount = stats['embedding_count'] as int;
         final accuracy = stats['ocr_accuracy'] as double;
 
         return Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: Row(children: [
             _StatChip(
-              label: '練習',
-              value: '$practiceCount 次',
-              highlight: practiceCount >= 10,
+              label: '嵌入',
+              value: '$embCount',
+              highlight: embCount >= 10,
             ),
             const SizedBox(width: 6),
-            if (sampleCount > 0) _StatChip(label: '樣本', value: '$sampleCount'),
-            const SizedBox(width: 6),
-            if (sampleCount >= 3)
+            if (embCount >= 3)
               _StatChip(
                 label: 'OCR',
                 value: '${(accuracy * 100).round()}%',

@@ -158,21 +158,23 @@ class ToastMessage {
   final String char;
   final int embeddingCount;
   final ToastStatus status;
+  final bool protoUpdated;
 
   const ToastMessage({
     required this.char,
     required this.embeddingCount,
-    this.status = ToastStatus.saved,
+    required this.status,
+    this.protoUpdated = false,
   });
 
   String get statusLabel {
     switch (status) {
       case ToastStatus.saved:
-        return '嵌入已儲存';
+        return protoUpdated ? '嵌入已儲存 · prototype ✓' : '嵌入已儲存';
       case ToastStatus.savedFallback:
-        return '嵌入已儲存 (rule-based)';
+        return 'rule-based 儲存';
       case ToastStatus.noModel:
-        return '未載入模型';
+        return '未載入模型 · rule-based';
       case ToastStatus.dbError:
         return 'DB 寫入失敗';
     }
@@ -316,6 +318,60 @@ class SimilarityResult {
 
   bool get isConsistent => score >= 0.80;
   bool get isGood => score >= 0.65;
+}
+
+// ── Check Result ──────────────────────────────────────────────────────────────
+
+enum CheckSaveStatus { savedModel, savedFallback, noModel, dbError }
+
+class CheckResult {
+  final CheckSaveStatus saveStatus;
+  final bool protoUpdated;
+  final int embeddingCount;
+  final double? similarity;
+  final String? errorMsg;
+
+  const CheckResult({
+    required this.saveStatus,
+    required this.protoUpdated,
+    required this.embeddingCount,
+    this.similarity,
+    this.errorMsg,
+  });
+
+  bool get isDbError => saveStatus == CheckSaveStatus.dbError;
+
+  String get feedbackText {
+    if (isDbError) return 'DB 寫入失敗: ${errorMsg ?? ''}';
+    if (saveStatus == CheckSaveStatus.noModel) return '未載入模型 · rule-based 儲存';
+    final sim = similarity;
+    if (sim == null) return protoUpdated ? '嵌入已儲存 · prototype 已更新' : '嵌入已儲存';
+    if (sim >= 0.85) return '一致性優秀 ${(sim * 100).round()}%';
+    if (sim >= 0.70) return '寫法穩定 ${(sim * 100).round()}%';
+    if (sim >= 0.55) return '略有差異 ${(sim * 100).round()}%';
+    return '筆法不同 ${(sim * 100).round()}% — 再試試';
+  }
+
+  SimilarityResult? get similarityResult => similarity == null
+      ? null
+      : SimilarityResult(
+          score: similarity!,
+          samplesCompared: embeddingCount,
+          feedback: feedbackText,
+        );
+
+  ToastStatus get toastStatus {
+    switch (saveStatus) {
+      case CheckSaveStatus.savedModel:
+        return ToastStatus.saved;
+      case CheckSaveStatus.savedFallback:
+        return ToastStatus.savedFallback;
+      case CheckSaveStatus.noModel:
+        return ToastStatus.noModel;
+      case CheckSaveStatus.dbError:
+        return ToastStatus.dbError;
+    }
+  }
 }
 
 // ── DB Service ────────────────────────────────────────────────────────────────
@@ -542,9 +598,9 @@ class DbService {
       {int limit = 10}) async {
     return db.rawQuery(
       '''
-      SELECT feature_json, ocr_matched, created_at
+      SELECT ocr_matched, created_at
       FROM $kTableSamples
-      WHERE vocabulary = ? AND feature_json IS NOT NULL
+      WHERE vocabulary = ?
       ORDER BY created_at DESC LIMIT ?
       ''',
       [vocabulary, limit],
@@ -553,16 +609,16 @@ class DbService {
 
   static Future<Map<String, dynamic>> getVocabStats(String vocabulary) async {
     final embCount = await getEmbeddingCount(vocabulary);
+    // OCR accuracy: tử số và mẫu số cùng từ handwriting_samples
     final rows = await db.rawQuery(
-      'SELECT SUM(ocr_matched) AS matched FROM $kTableSamples WHERE vocabulary = ?',
+      'SELECT COUNT(*) AS total, SUM(ocr_matched) AS matched FROM $kTableSamples WHERE vocabulary = ?',
       [vocabulary],
     );
+    final total = (rows.first['total'] as int?) ?? 0;
     final matched = (rows.first['matched'] as int?) ?? 0;
     return {
-      'practice_count': embCount, // UI key reused — no widget change needed
-      'sample_count': embCount,
-      'ocr_accuracy': embCount > 0 ? matched / embCount : 0.0,
-      'last_practiced': null,
+      'embedding_count': embCount,
+      'ocr_accuracy': total > 0 ? matched / total : 0.0,
     };
   }
 }
@@ -688,6 +744,20 @@ class PrototypeService {
     }
   }
 
+  /// Compute similarity against current prototype WITHOUT updating it.
+  /// Call this BEFORE saveAndUpdate to avoid self-bias.
+  static Future<double?> computeSimilarity({
+    required String vocabulary,
+    required List<double> embedding,
+  }) async {
+    final proto = await DbService.getPrototype(vocabulary);
+    if (proto == null) return null;
+    final protoVec = (jsonDecode(proto['prototype_json'] as String) as List)
+        .map((e) => (e as num).toDouble())
+        .toList();
+    return _cosine(embedding, protoVec);
+  }
+
   /// Cosine similarity between [embedding] and stored prototype. Null if no prototype yet.
   static Future<double?> similarityToPrototype({
     required String vocabulary,
@@ -717,37 +787,47 @@ class PrototypeService {
 // ── Local Learning Service ────────────────────────────────────────────────────
 
 class LocalLearningService {
-  static Future<SimilarityResult?> onCheck({
-    required List<StrokeData> strokes,
+  /// Caller must pre-compute [embedding] and [isFallback] (encode once outside).
+  static Future<CheckResult> onCheck({
     required String vocabulary,
     required List<String> ocrRaw,
     required double strokeWidth,
+    required List<StrokeData> strokes,
+    required List<double> embedding,
+    required bool isFallback,
   }) async {
-    if (strokes.isEmpty || vocabulary.isEmpty) return null;
-
-    // 1. Render PNG for encoder (reuse existing service)
-    Uint8List? pngBytes;
-    try {
-      pngBytes = await CanvasRenderService.renderPngBytes(
-        strokes,
-        strokeWidth: strokeWidth,
+    if (vocabulary.isEmpty) {
+      return CheckResult(
+        saveStatus: CheckSaveStatus.dbError,
+        protoUpdated: false,
+        embeddingCount: 0,
+        errorMsg: 'vocabulary empty',
       );
-    } catch (_) {}
+    }
 
-    // 2. Try TFLite encoder → fallback to rule-based
-    List<double>? tflEmb =
-        pngBytes != null ? await EmbeddingEncoder.encode(pngBytes) : null;
-    final isFallback = tflEmb == null;
-    final embedding = tflEmb ?? EmbeddingEncoder.fallback(strokes);
+    // 1. Compute similarity vs OLD prototype BEFORE updating (avoid self-bias)
+    final simBefore = await PrototypeService.computeSimilarity(
+      vocabulary: vocabulary,
+      embedding: embedding,
+    );
 
-    // 3. Save embedding + update EMA prototype
+    // 2. Save embedding + update prototype
     final saveResult = await PrototypeService.saveAndUpdate(
       vocabulary: vocabulary,
       embedding: embedding,
       isFallback: isFallback,
     );
 
-    // 4. Also write to legacy samples table for OCR accuracy tracking
+    if (saveResult.status == SaveEmbeddingStatus.dbError) {
+      return CheckResult(
+        saveStatus: CheckSaveStatus.dbError,
+        protoUpdated: false,
+        embeddingCount: 0,
+        errorMsg: saveResult.errorMsg,
+      );
+    }
+
+    // 3. Write to legacy samples table for OCR accuracy tracking
     final ocrMatched = ocrRaw.contains(vocabulary) ||
         ocrRaw.any((r) => r.contains(vocabulary));
     try {
@@ -763,26 +843,14 @@ class LocalLearningService {
       );
     } catch (_) {}
 
-    // 5. Cosine similarity vs prototype
-    if (saveResult.status == SaveEmbeddingStatus.dbError) return null;
-    final sim = await PrototypeService.similarityToPrototype(
-      vocabulary: vocabulary,
-      embedding: embedding,
-    );
-    if (sim == null) return null;
+    final checkSaveStatus =
+        isFallback ? CheckSaveStatus.noModel : CheckSaveStatus.savedModel;
 
-    final feedback = sim >= 0.85
-        ? '一致性優秀 ${(sim * 100).round()}%'
-        : sim >= 0.70
-            ? '寫法穩定 ${(sim * 100).round()}%'
-            : sim >= 0.55
-                ? '略有差異 ${(sim * 100).round()}%'
-                : '筆法不同 ${(sim * 100).round()}% — 再試試';
-
-    return SimilarityResult(
-      score: sim,
-      samplesCompared: saveResult.count,
-      feedback: feedback,
+    return CheckResult(
+      saveStatus: checkSaveStatus,
+      protoUpdated: true,
+      embeddingCount: saveResult.count,
+      similarity: simBefore,
     );
   }
 
@@ -1058,19 +1126,23 @@ class AppState extends ChangeNotifier {
         strokeWidth: _strokeWidth,
       );
 
+      // ── Encode ONCE — reused for inject + onCheck + toast ────────────────
+      final List<double>? tflEmb = await EmbeddingEncoder.encode(pngBytes);
+      final bool isFallback = tflEmb == null;
+      final List<double> embedding =
+          tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+
       final raw = await VisionOcrService.recognizeCanvasPng(
         pngBytes,
         maxCandidates: kTopK,
       );
 
-      // ── Prototype-based fallback when OCR misses the pinned character ────────
+      // ── Prototype-based inject when OCR misses the pinned character ───────
       VocabEntry? featureInjected;
       if (_showPinnedTemplate && _pinnedEntry != null) {
-        final emb = await EmbeddingEncoder.encode(pngBytes) ??
-            EmbeddingEncoder.fallback(_canvas.strokes);
-        final sim = await PrototypeService.similarityToPrototype(
+        final sim = await PrototypeService.computeSimilarity(
           vocabulary: _pinnedEntry!.vocabulary,
-          embedding: emb,
+          embedding: embedding,
         );
         if (sim != null) {
           final count =
@@ -1088,7 +1160,6 @@ class AppState extends ChangeNotifier {
       final tokens = _buildLookupTokens(raw);
       var matches = await DbService.findByVocabularyTokens(tokens);
 
-      // Inject feature-matched pinned entry at top if not already present.
       if (featureInjected != null &&
           !matches.any((e) => e.vocabulary == featureInjected!.vocabulary)) {
         matches = [featureInjected!, ...matches];
@@ -1105,23 +1176,23 @@ class AppState extends ChangeNotifier {
 
       _result = RecResult(matches: matches, raw: raw);
 
-      // ── Local learning: save embedding + similarity + toast ──────────────
+      // ── Local learning: save embedding + update prototype + toast ─────────
       if (_showPinnedTemplate && _pinnedEntry != null) {
-        _similarityResult = await LocalLearningService.onCheck(
-          strokes: _canvas.strokes,
+        final checkResult = await LocalLearningService.onCheck(
           vocabulary: _pinnedEntry!.vocabulary,
           ocrRaw: raw,
           strokeWidth: _strokeWidth,
+          strokes: _canvas.strokes,
+          embedding: embedding,
+          isFallback: isFallback,
         );
 
-        final count =
-            await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
-        // Detect whether model is available for toast status
-        final hasModel = await EmbeddingEncoder.encode(pngBytes) != null;
+        _similarityResult = checkResult.similarityResult;
         _pendingToast = ToastMessage(
           char: _pinnedEntry!.vocabulary,
-          embeddingCount: count,
-          status: hasModel ? ToastStatus.saved : ToastStatus.savedFallback,
+          embeddingCount: checkResult.embeddingCount,
+          status: checkResult.toastStatus,
+          protoUpdated: checkResult.protoUpdated,
         );
       }
     } catch (e, st) {
