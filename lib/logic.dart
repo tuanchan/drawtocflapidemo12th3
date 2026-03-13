@@ -1605,7 +1605,8 @@ class PrototypeService {
     return ((raw + 1.0) / 2.0).clamp(0.0, 1.0); // map sang % hiển thị
   }
 
-  static double cosine(List<double> a, List<double> b) => cosine01(a, b);
+  static double cosine(List<double> a, List<double> b) =>
+      rawCosine(a, b).clamp(0.0, 1.0);
 }
 
 // ── Local Learning Service ────────────────────────────────────────────────────
