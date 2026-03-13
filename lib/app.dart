@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'logic.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:file_picker/file_picker.dart';
+import 'dart:io';
 
 const kBg = Color(0xFF0A0A0A);
 const kSurface = Color(0xFF141414);
