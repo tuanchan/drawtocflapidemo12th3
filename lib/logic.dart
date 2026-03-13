@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:archive/archive_io.dart';
+import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 import 'package:uuid/uuid.dart';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -954,15 +955,73 @@ class EmbeddingEncoder {
     _importedAt = importedAt;
   }
 
+  // Cached interpreter — reused across calls until model path changes.
+  static tfl.Interpreter? _interpreter;
+  static String? _loadedModelPath;
+
   /// Run TFLite encoder inference.
-  /// TODO: replace stub with real tflite_flutter inference once package is added.
+  /// Input: PNG bytes (any size, white background black strokes).
+  /// Output: List<double> of length [dim], or null on error / no model.
   static Future<List<double>?> encode(Uint8List pngBytes) async {
     if (!hasImportedModel()) return null;
-    // TODO: load interpreter from getLocalModelPath(), run inference, return embedding.
-    // Example (requires tflite_flutter package):
-    // final interpreter = await tfl.Interpreter.fromFile(File(_localModelPath!));
-    // ...
-    return null;
+    try {
+      // Re-load interpreter only when model path changed.
+      if (_interpreter == null || _loadedModelPath != _localModelPath) {
+        _interpreter?.close();
+        _interpreter = tfl.Interpreter.fromFile(
+          File(_localModelPath!),
+          options: tfl.InterpreterOptions()..threads = 2,
+        );
+        _loadedModelPath = _localModelPath;
+      }
+
+      // ── Preprocess: decode PNG → grayscale 64×64 float32 ─────────────────
+      final codec = await ui.instantiateImageCodec(
+        pngBytes,
+        targetWidth: 64,
+        targetHeight: 64,
+      );
+      final frame = await codec.getNextFrame();
+      final byteData =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      frame.image.dispose();
+      if (byteData == null) return null;
+
+      // RGBA → grayscale float32, normalize to [0, 1].
+      // The canvas is white-background / black-stroke, so we invert so that
+      // ink = 1.0 and background = 0.0 (typical for handwriting models).
+      final rgba = byteData.buffer.asUint8List();
+      final input = List.generate(
+        64 * 64,
+        (i) {
+          final r = rgba[i * 4];
+          final g = rgba[i * 4 + 1];
+          final b = rgba[i * 4 + 2];
+          final gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+          return 1.0 - gray; // invert: ink → 1, background → 0
+        },
+      );
+
+      // Shape: [1, 64, 64, 1]
+      final inputTensor = [
+        List.generate(
+            64, (row) => List.generate(64, (col) => [input[row * 64 + col]]))
+      ];
+
+      // Output: [1, dim]
+      final outputTensor = List.generate(1, (_) => List.filled(dim, 0.0));
+
+      _interpreter!.run(inputTensor, outputTensor);
+
+      return List<double>.from(outputTensor[0]);
+    } catch (e) {
+      debugPrint('[EmbeddingEncoder.encode] $e');
+      // Invalidate cached interpreter so next call retries a fresh load.
+      _interpreter?.close();
+      _interpreter = null;
+      _loadedModelPath = null;
+      return null;
+    }
   }
 
   /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
@@ -1268,8 +1327,7 @@ class DatasetExportService {
       }
 
       // ── Step 5: mark uploaded ────────────────────────────────────────────
-      await DbService.markExportSamplesUploaded(
-          pending.map((s) => s.id).toList(), batchId);
+      await DbService.markExportSamplesUploaded(sampleIds, batchId);
 
       if (settings.autoDeleteAfterUpload) {
         await DbService.deleteExportSamplesByBatch(batchId);
