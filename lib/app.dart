@@ -88,18 +88,47 @@ class _Body extends StatelessWidget {
     return LayoutBuilder(builder: (ctx, c) {
       final isWide = c.maxWidth > 600;
       if (isWide) {
-        return const Row(children: [
-          Expanded(flex: 5, child: _CanvasArea()),
-          SizedBox(width: 1, child: ColoredBox(color: kBorder)),
-          Expanded(flex: 4, child: _RightPanel()),
+        // Wide: left = top-panel + canvas, right = info area
+        return Row(children: [
+          Expanded(
+            flex: 5,
+            child: Column(children: [
+              const _TopPanel(),
+              const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+              const Expanded(child: _CanvasArea()),
+            ]),
+          ),
+          const SizedBox(width: 1, child: ColoredBox(color: kBorder)),
+          Expanded(flex: 4, child: _InfoArea()),
         ]);
       }
-      return const Column(children: [
-        Expanded(flex: 5, child: _CanvasArea()),
-        SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        Expanded(flex: 4, child: _RightPanel()),
+      // Narrow: top panel → canvas → info
+      return Column(children: [
+        const _TopPanel(),
+        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+        const Expanded(flex: 5, child: _CanvasArea()),
+        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+        Expanded(flex: 4, child: _InfoArea()),
       ]);
     });
+  }
+}
+
+// ── Top panel: search + controls ─────────────────────────────────────────────
+
+class _TopPanel extends StatelessWidget {
+  const _TopPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _SearchBar(),
+        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+        _CanvasControls(),
+      ],
+    );
   }
 }
 
@@ -108,10 +137,7 @@ class _Body extends StatelessWidget {
 class _CanvasArea extends StatelessWidget {
   const _CanvasArea();
   @override
-  Widget build(BuildContext context) => Column(children: [
-        const Expanded(child: _DrawCanvas()),
-        _CanvasControls(),
-      ]);
+  Widget build(BuildContext context) => const _DrawCanvas();
 }
 
 class _DrawCanvas extends StatelessWidget {
@@ -256,14 +282,41 @@ class _CanvasPainter extends CustomPainter {
       old.showPinnedTemplate != showPinnedTemplate;
 }
 
+// ── Canvas Controls ───────────────────────────────────────────────────────────
+
 class _CanvasControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-      child: Column(children: [
-        Row(children: [
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      child: Row(
+        children: [
+          // Action buttons
+          _Btn(
+              label: 'undo',
+              enabled: state.canvas.canUndo,
+              onTap: () => context.read<AppState>().undo()),
+          const SizedBox(width: 6),
+          _Btn(
+              label: 'clear',
+              enabled: state.canvas.hasStrokes,
+              onTap: () => context.read<AppState>().clear()),
+          const SizedBox(width: 6),
+          _Btn(
+            label: state.showPinnedTemplate ? 'tmpl ●' : 'tmpl',
+            enabled: state.pinnedEntry != null,
+            onTap: () => context.read<AppState>().togglePinnedTemplate(),
+          ),
+          const SizedBox(width: 6),
+          _Btn(
+            label: state.busy ? '…' : 'check',
+            enabled: state.canCheck,
+            accent: true,
+            onTap: () => context.read<AppState>().recognize(),
+          ),
+          const SizedBox(width: 10),
+          // Stroke width slider
           const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
           Expanded(
             child: SliderTheme(
@@ -284,48 +337,9 @@ class _CanvasControls extends StatelessWidget {
             ),
           ),
           const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
-        ]),
-        const SizedBox(height: 4),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          _Btn(
-              label: 'undo',
-              enabled: state.canvas.canUndo,
-              onTap: () => context.read<AppState>().undo()),
-          const SizedBox(width: 8),
-          _Btn(
-              label: 'clear',
-              enabled: state.canvas.hasStrokes,
-              onTap: () => context.read<AppState>().clear()),
-          const SizedBox(width: 8),
-          _Btn(
-            label: state.showPinnedTemplate ? 'template on' : 'template',
-            enabled: state.pinnedEntry != null,
-            onTap: () => context.read<AppState>().togglePinnedTemplate(),
-          ),
-          const SizedBox(width: 8),
-          _Btn(
-            label: state.busy ? '…' : 'check',
-            enabled: state.canCheck,
-            accent: true,
-            onTap: () => context.read<AppState>().recognize(),
-          ),
-        ]),
-      ]),
+        ],
+      ),
     );
-  }
-}
-
-// ── Right panel ───────────────────────────────────────────────────────────────
-
-class _RightPanel extends StatelessWidget {
-  const _RightPanel();
-  @override
-  Widget build(BuildContext context) {
-    return Column(children: [
-      const _SearchBar(),
-      const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-      const Expanded(child: _InfoArea()),
-    ]);
   }
 }
 
@@ -339,11 +353,18 @@ class _SearchBar extends StatefulWidget {
 
 class _SearchBarState extends State<_SearchBar> {
   final _ctrl = TextEditingController();
+  final _focusNode = FocusNode();
 
   @override
   void dispose() {
     _ctrl.dispose();
+    _focusNode.dispose();
     super.dispose();
+  }
+
+  void _dismissKeyboard() {
+    _focusNode.unfocus();
+    FocusScope.of(context).unfocus();
   }
 
   @override
@@ -353,11 +374,12 @@ class _SearchBarState extends State<_SearchBar> {
       mainAxisSize: MainAxisSize.min,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
           child: Row(children: [
             Expanded(
               child: TextField(
                 controller: _ctrl,
+                focusNode: _focusNode,
                 style: const TextStyle(color: kTextPrimary, fontSize: 13),
                 cursorColor: kAccent,
                 decoration: InputDecoration(
@@ -420,7 +442,11 @@ class _SearchBarState extends State<_SearchBar> {
                 final e = state.searchSuggestions[i];
                 return GestureDetector(
                   onTap: () {
+                    // ① Ẩn bàn phím ngay lập tức
+                    _dismissKeyboard();
+                    // ② Xoá text field
                     _ctrl.clear();
+                    // ③ Cập nhật state
                     context.read<AppState>().selectSuggestion(e);
                   },
                   child: Container(
@@ -484,7 +510,7 @@ class _InfoArea extends StatelessWidget {
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: _ResultArea(),
+      child: const _ResultArea(),
     );
   }
 }
@@ -671,7 +697,7 @@ class _Btn extends StatelessWidget {
     return GestureDetector(
       onTap: enabled ? onTap : null,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: bg,
           border: Border.all(color: border),
