@@ -822,6 +822,7 @@ class _CanvasArea extends StatelessWidget {
         Expanded(child: _DrawCanvas()),
         _LearningFeedback(),
         _DatasetStatusBar(),
+        _RealtimePredictionPanel(),
       ]);
 }
 
@@ -882,7 +883,120 @@ class _DatasetStatusBar extends StatelessWidget {
   }
 }
 
-// ── Draw canvas ───────────────────────────────────────────────────────────────
+// ── Realtime Prediction Panel ─────────────────────────────────────────────────
+
+class _RealtimePredictionPanel extends StatelessWidget {
+  const _RealtimePredictionPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final candidates = state.realtimeCandidates;
+
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: kBorder, width: 1)),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      child: candidates.isEmpty
+          ? const Text(
+              'no proto match yet',
+              style:
+                  TextStyle(color: kTextMuted, fontSize: 9, letterSpacing: 0.8),
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Best match — large glyph + score
+                _BestMatchGlyph(candidate: candidates.first),
+                const SizedBox(width: 12),
+                // Similar candidates
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: candidates.skip(1).map((c) {
+                      final isSimilar =
+                          (candidates.first.score - c.score) <= 0.08;
+                      return _CandidateChip(candidate: c, isSimilar: isSimilar);
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _BestMatchGlyph extends StatelessWidget {
+  final ProtoMatchCandidate candidate;
+  const _BestMatchGlyph({required this.candidate});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (candidate.score * 100).round();
+    final color = pct >= 80
+        ? kSuccess
+        : pct >= 60
+            ? kAccent
+            : kTextSecondary;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          candidate.vocabulary,
+          style: const TextStyle(
+              color: kAccent,
+              fontSize: 32,
+              fontWeight: FontWeight.w200,
+              height: 1),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '$pct%',
+          style: TextStyle(color: color, fontSize: 9, letterSpacing: 0.5),
+        ),
+      ],
+    );
+  }
+}
+
+class _CandidateChip extends StatelessWidget {
+  final ProtoMatchCandidate candidate;
+  final bool isSimilar;
+  const _CandidateChip({required this.candidate, required this.isSimilar});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (candidate.score * 100).round();
+    final borderColor = isSimilar ? kAccentDim : kBorder.withOpacity(0.5);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        border: Border.all(color: borderColor),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: RichText(
+        text: TextSpan(children: [
+          TextSpan(
+            text: candidate.vocabulary,
+            style: TextStyle(
+                color: isSimilar ? kAccent : kTextSecondary,
+                fontSize: 16,
+                fontWeight: FontWeight.w200,
+                height: 1),
+          ),
+          TextSpan(
+            text: ' $pct',
+            style: const TextStyle(
+                color: kTextMuted, fontSize: 8, letterSpacing: 0.3),
+          ),
+        ]),
+      ),
+    );
+  }
+}
 
 class _DrawCanvas extends StatelessWidget {
   const _DrawCanvas();
@@ -1371,6 +1485,10 @@ class _InfoArea extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 2, bottom: 10),
+              child: Divider(color: kBorder, height: 1, thickness: 1),
+            ),
             _EntryCard(
               entry: state.pinnedEntry!,
               showStrokeOrder: true,
@@ -1406,24 +1524,21 @@ class _ResultArea extends StatelessWidget {
           style: const TextStyle(color: kError, fontSize: 11));
     }
     if (r.matches.isEmpty) {
-      if (r.raw.isEmpty) {
-        return const Text('沒有辨識結果',
-            style: TextStyle(color: kTextMuted, fontSize: 12));
-      }
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Vision 輸出（不在詞庫中）',
-            style:
-                TextStyle(color: kTextMuted, fontSize: 10, letterSpacing: 1)),
-        const SizedBox(height: 8),
-        Text(r.raw.join('  '),
-            style: const TextStyle(color: kTextSecondary, fontSize: 20)),
-      ]);
+      return const Text('no proto match',
+          style: TextStyle(color: kTextMuted, fontSize: 12));
     }
+    // Divider between stat chips area (above) and entry cards (below)
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: r.matches
-          .map((e) => _EntryCard(entry: e, showStrokeOrder: true))
-          .toList(),
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 10),
+          child: Divider(color: kBorder, height: 1, thickness: 1),
+        ),
+        ...r.matches
+            .map((e) => _EntryCard(entry: e, showStrokeOrder: true))
+            .toList(),
+      ],
     );
   }
 }
@@ -1556,8 +1671,8 @@ class _StrokeOrderBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = char.isNotEmpty ? char.characters.first : char;
-    final url =
-        'https://stroke-order.learningweb.moe.edu.tw/charactersQueryResult.do?words=$c';
+    final encoded = Uri.encodeComponent(c);
+    final url = 'https://hanzii.net/search/word/$encoded?hl=vi';
     return GestureDetector(
       onTap: () async {
         final uri = Uri.parse(url);

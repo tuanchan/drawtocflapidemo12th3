@@ -15,8 +15,21 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:archive/archive_io.dart';
-import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
+// import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 import 'package:uuid/uuid.dart';
+
+// ── Proto Match Candidate ─────────────────────────────────────────────────────
+
+class ProtoMatchCandidate {
+  final String vocabulary;
+  final double score;
+  final int count;
+  const ProtoMatchCandidate({
+    required this.vocabulary,
+    required this.score,
+    required this.count,
+  });
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -918,6 +931,13 @@ class DbService {
       'UPDATE $kTableExportSamples SET deleted = 1 WHERE uploaded = 0',
     );
   }
+
+  /// Returns all rows from char_prototypes as raw maps.
+  static Future<List<Map<String, dynamic>>> getAllPrototypes() async {
+    return db.rawQuery(
+      'SELECT vocabulary, prototype_json, count FROM $kTablePrototypes ORDER BY count DESC',
+    );
+  }
 }
 
 // ── Embedding Encoder ─────────────────────────────────────────────────────────
@@ -956,72 +976,14 @@ class EmbeddingEncoder {
   }
 
   // Cached interpreter — reused across calls until model path changes.
-  static tfl.Interpreter? _interpreter;
+  // static tfl.Interpreter? _interpreter;
   static String? _loadedModelPath;
 
   /// Run TFLite encoder inference.
   /// Input: PNG bytes (any size, white background black strokes).
   /// Output: List<double> of length [dim], or null on error / no model.
   static Future<List<double>?> encode(Uint8List pngBytes) async {
-    if (!hasImportedModel()) return null;
-    try {
-      // Re-load interpreter only when model path changed.
-      if (_interpreter == null || _loadedModelPath != _localModelPath) {
-        _interpreter?.close();
-        _interpreter = tfl.Interpreter.fromFile(
-          File(_localModelPath!),
-          options: tfl.InterpreterOptions()..threads = 2,
-        );
-        _loadedModelPath = _localModelPath;
-      }
-
-      // ── Preprocess: decode PNG → grayscale 64×64 float32 ─────────────────
-      final codec = await ui.instantiateImageCodec(
-        pngBytes,
-        targetWidth: 64,
-        targetHeight: 64,
-      );
-      final frame = await codec.getNextFrame();
-      final byteData =
-          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
-      frame.image.dispose();
-      if (byteData == null) return null;
-
-      // RGBA → grayscale float32, normalize to [0, 1].
-      // The canvas is white-background / black-stroke, so we invert so that
-      // ink = 1.0 and background = 0.0 (typical for handwriting models).
-      final rgba = byteData.buffer.asUint8List();
-      final input = List.generate(
-        64 * 64,
-        (i) {
-          final r = rgba[i * 4];
-          final g = rgba[i * 4 + 1];
-          final b = rgba[i * 4 + 2];
-          final gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
-          return 1.0 - gray; // invert: ink → 1, background → 0
-        },
-      );
-
-      // Shape: [1, 64, 64, 1]
-      final inputTensor = [
-        List.generate(
-            64, (row) => List.generate(64, (col) => [input[row * 64 + col]]))
-      ];
-
-      // Output: [1, dim]
-      final outputTensor = List.generate(1, (_) => List.filled(dim, 0.0));
-
-      _interpreter!.run(inputTensor, outputTensor);
-
-      return List<double>.from(outputTensor[0]);
-    } catch (e) {
-      debugPrint('[EmbeddingEncoder.encode] $e');
-      // Invalidate cached interpreter so next call retries a fresh load.
-      _interpreter?.close();
-      _interpreter = null;
-      _loadedModelPath = null;
-      return null;
-    }
+    return null;
   }
 
   /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
@@ -1484,6 +1446,9 @@ class PrototypeService {
     final d = math.sqrt(nA) * math.sqrt(nB);
     return d < 1e-10 ? 0.0 : (dot / d).clamp(0.0, 1.0);
   }
+
+  /// Public alias used by AppState realtime compare.
+  static double cosine(List<double> a, List<double> b) => _cosine(a, b);
 }
 
 // ── Local Learning Service ────────────────────────────────────────────────────
@@ -1704,6 +1669,11 @@ class AppState extends ChangeNotifier {
   int _pendingUploadCount = 0;
   int _localSampleCountForPinned = 0;
 
+  // ── Realtime proto-match state ────────────────────────────────────────────
+  List<ProtoMatchCandidate> _realtimeCandidates = const [];
+  bool _realtimeBusy = false;
+  Timer? _realtimeDebounce;
+
   bool get ready => _ready;
   String? get initError => _initError;
   bool get busy => _busy;
@@ -1721,6 +1691,8 @@ class AppState extends ChangeNotifier {
   AppSettings get settings => _settings;
   int get pendingUploadCount => _pendingUploadCount;
   int get localSampleCountForPinned => _localSampleCountForPinned;
+  List<ProtoMatchCandidate> get realtimeCandidates => _realtimeCandidates;
+  bool get realtimeBusy => _realtimeBusy;
 
   void consumeToast() {
     if (_pendingToast == null) return;
@@ -1788,11 +1760,19 @@ class AppState extends ChangeNotifier {
   void strokeAdd(double x, double y) {
     _canvas = _canvas.addPoint(x, y);
     notifyListeners();
+    // Debounced realtime compare while drawing
+    _realtimeDebounce?.cancel();
+    _realtimeDebounce = Timer(const Duration(milliseconds: 180), () {
+      _runRealtimeCompare();
+    });
   }
 
   void strokeEnd() {
     _canvas = _canvas.endStroke();
     notifyListeners();
+    // Immediate compare on stroke end (cancel any pending debounce first)
+    _realtimeDebounce?.cancel();
+    _runRealtimeCompare();
   }
 
   void undo() {
@@ -1806,6 +1786,7 @@ class AppState extends ChangeNotifier {
     _result = null;
     _similarityResult = null;
     _matchSource = MatchSource.none;
+    _realtimeCandidates = const [];
     notifyListeners();
   }
 
@@ -1881,7 +1862,52 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // ── Recognize ─────────────────────────────────────────────────────────────
+  // ── Realtime proto compare ────────────────────────────────────────────────
+
+  Future<void> _runRealtimeCompare() async {
+    if (_realtimeBusy) return;
+    if (_canvas.strokes.isEmpty) return;
+    _realtimeBusy = true;
+    try {
+      final pngBytes = await CanvasRenderService.renderPngBytes(
+        _canvas.strokes,
+        strokeWidth: _strokeWidth,
+      );
+      final tflEmb = await EmbeddingEncoder.encode(pngBytes);
+      final embedding = tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+
+      final protos = await DbService.getAllPrototypes();
+      if (protos.isEmpty) {
+        _realtimeCandidates = const [];
+        notifyListeners();
+        return;
+      }
+
+      final candidates = <ProtoMatchCandidate>[];
+      for (final row in protos) {
+        try {
+          final vocab = row['vocabulary'] as String;
+          final protoVec = (jsonDecode(row['prototype_json'] as String) as List)
+              .map((e) => (e as num).toDouble())
+              .toList();
+          final count = (row['count'] as int?) ?? 0;
+          final score = PrototypeService.cosine(embedding, protoVec);
+          candidates.add(ProtoMatchCandidate(
+              vocabulary: vocab, score: score, count: count));
+        } catch (_) {}
+      }
+
+      candidates.sort((a, b) => b.score.compareTo(a.score));
+      _realtimeCandidates = candidates.take(5).toList();
+    } catch (e) {
+      debugPrint('[_runRealtimeCompare] $e');
+    } finally {
+      _realtimeBusy = false;
+      notifyListeners();
+    }
+  }
+
+  // ── Recognize (OCR bypassed — proto/model only) ───────────────────────────
 
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
@@ -1903,108 +1929,60 @@ class AppState extends ChangeNotifier {
       final List<double> embedding =
           tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
 
-      bool matchedByProto = false;
-      List<String> raw = const [];
+      // ── OCR BYPASSED — testing model/prototype only ───────────────────────
+      // All OCR / VisionOcrService calls removed for this mode.
+      // Match against ALL prototypes (same logic as realtime compare).
+      final protos = await DbService.getAllPrototypes();
       List<VocabEntry> matches = const [];
 
-      if (_showPinnedTemplate && _pinnedEntry != null) {
-        final count =
-            await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
-        final simBefore = await PrototypeService.computeSimilarity(
-          vocabulary: _pinnedEntry!.vocabulary,
-          embedding: embedding,
-        );
-
-        final protoThresh = count >= 10
-            ? 0.58
-            : count >= 5
-                ? 0.65
-                : 0.75;
-
-        if (simBefore != null && simBefore >= protoThresh) {
-          matchedByProto = true;
-          matches = [_pinnedEntry!];
-          _matchSource = MatchSource.proto;
+      if (protos.isNotEmpty) {
+        final scored = <MapEntry<String, double>>[];
+        for (final row in protos) {
+          try {
+            final vocab = row['vocabulary'] as String;
+            final protoVec =
+                (jsonDecode(row['prototype_json'] as String) as List)
+                    .map((e) => (e as num).toDouble())
+                    .toList();
+            scored.add(
+                MapEntry(vocab, PrototypeService.cosine(embedding, protoVec)));
+          } catch (_) {}
         }
+        scored.sort((a, b) => b.value.compareTo(a.value));
+        final topVocabs = scored.take(kTopK).map((e) => e.key).toList();
+        matches = await DbService.findByVocabularyTokens(topVocabs);
+        // Re-sort matches to follow proto score order
+        final orderMap = {
+          for (var i = 0; i < topVocabs.length; i++) topVocabs[i]: i
+        };
+        matches.sort((a, b) => (orderMap[a.vocabulary] ?? 99)
+            .compareTo(orderMap[b.vocabulary] ?? 99));
       }
 
-      if (!matchedByProto) {
-        if (!_isIOS) {
-          _result = const RecResult(
-            error: 'Vision OCR chỉ chạy trên iPhone/iOS.',
-            matchSource: MatchSource.none,
-          );
-          return;
-        }
-
-        raw = await VisionOcrService.recognizeCanvasPng(
-          pngBytes,
-          maxCandidates: kTopK,
-        );
-
-        VocabEntry? softInjected;
-        if (_showPinnedTemplate && _pinnedEntry != null && raw.isNotEmpty) {
-          final sim = await PrototypeService.computeSimilarity(
-            vocabulary: _pinnedEntry!.vocabulary,
-            embedding: embedding,
-          );
-          final count =
-              await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
-          final injectThresh = count >= 7 ? 0.50 : 0.55;
-          if (sim != null &&
-              sim >= injectThresh &&
-              !raw.contains(_pinnedEntry!.vocabulary)) {
-            softInjected = _pinnedEntry;
-          }
-        }
-
-        if (raw.isEmpty && softInjected == null) {
-          _result = const RecResult(
-            raw: [],
-            matchSource: MatchSource.ocr,
-          );
-          return;
-        }
-
-        final tokens = _buildLookupTokens(raw);
-        final ocrMatches = await DbService.findByVocabularyTokens(tokens);
-        final vocabs = ocrMatches.map((e) => e.vocabulary).toList();
-        final boosts = await LocalLearningService.getBoostScores(vocabs);
-
-        if (softInjected != null &&
-            !ocrMatches.any((e) => e.vocabulary == softInjected!.vocabulary)) {
-          final sortedTail =
-              _sortMatchesByCandidateOrder(ocrMatches, raw, boosts);
-          matches = [softInjected!, ...sortedTail];
-        } else {
-          matches = _sortMatchesByCandidateOrder(ocrMatches, raw, boosts);
-        }
-        _matchSource = MatchSource.ocr;
-      }
-
+      _matchSource = MatchSource.proto;
       _result = RecResult(
         matches: matches,
-        raw: raw,
-        matchSource: _matchSource,
+        raw: const [],
+        matchSource: MatchSource.proto,
       );
 
+      // Save embedding + update prototype for pinned entry
       if (_showPinnedTemplate && _pinnedEntry != null) {
         final checkResult = await LocalLearningService.onCheck(
           vocabulary: _pinnedEntry!.vocabulary,
-          ocrRaw: raw,
+          ocrRaw: const [],
           strokeWidth: _strokeWidth,
           strokes: _canvas.strokes,
           embedding: embedding,
           isFallback: isFallback,
         );
-
         _similarityResult = checkResult.similarityResult;
         _pendingToast = ToastMessage(
           char: _pinnedEntry!.vocabulary,
           embeddingCount: checkResult.embeddingCount,
           status: checkResult.toastStatus,
           protoUpdated: checkResult.protoUpdated,
-          matchedByProto: matchedByProto,
+          matchedByProto: true,
         );
       }
     } catch (e, st) {
@@ -2071,6 +2049,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _realtimeDebounce?.cancel();
     super.dispose();
   }
 }
