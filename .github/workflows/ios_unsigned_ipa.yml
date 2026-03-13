@@ -47,8 +47,30 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 15.5" ios/Flutter/AppFrameworkInfo.plist || true
           perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj || true
 
+      - name: Disable code signing in project.pbxproj
+        run: |
+          perl -0pi -e 's/DEVELOPMENT_TEAM = [A-Z0-9]+;/DEVELOPMENT_TEAM = "";/g' ios/Runner.xcodeproj/project.pbxproj || true
+          perl -0pi -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' ios/Runner.xcodeproj/project.pbxproj || true
+          perl -0pi -e 's/CODE_SIGN_IDENTITY = ".*?";/CODE_SIGN_IDENTITY = "";/g' ios/Runner.xcodeproj/project.pbxproj || true
+
       - name: Show Podfile
         run: cat ios/Podfile
+
+      - name: Disable code signing in Podfile
+        run: |
+          cat >> ios/Podfile << 'EOF'
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                config.build_settings['EXPANDED_CODE_SIGN_IDENTITY'] = '-'
+                config.build_settings['DEVELOPMENT_TEAM'] = ''
+              end
+            end
+          end
+          EOF
 
       - name: Install CocoaPods
         working-directory: ios
@@ -56,6 +78,10 @@ jobs:
 
       - name: Flutter build iOS release (no codesign)
         run: flutter build ios --release --no-codesign
+        env:
+          EXPANDED_CODE_SIGN_IDENTITY: "-"
+          CODE_SIGNING_REQUIRED: "NO"
+          CODE_SIGNING_ALLOWED: "NO"
 
       - name: Verify Runner.app exists
         run: |
