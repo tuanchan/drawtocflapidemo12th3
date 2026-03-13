@@ -881,10 +881,98 @@ class _TopPanel extends StatelessWidget {
           const _SearchBar(),
           const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
           _CanvasControls(),
+          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+          const _RealtimeTopBar(), // ← thêm dòng này
         ],
       );
 }
 
+class _RealtimeTopBar extends StatelessWidget {
+  const _RealtimeTopBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final candidates = state.realtimeCandidates;
+    if (candidates.isEmpty) return const SizedBox.shrink();
+
+    final top = candidates.first;
+    final pct = (top.score * 100).round();
+    final topColor = pct >= 80
+        ? kSuccess
+        : pct >= 60
+            ? kAccent
+            : kTextSecondary;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: kBorder, width: 1)),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            // Top match nổi bật
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  color: topColor.withOpacity(0.08),
+                  border: Border.all(color: topColor.withOpacity(0.5)),
+                  borderRadius: BorderRadius.circular(3)),
+              child: RichText(
+                  text: TextSpan(children: [
+                TextSpan(
+                    text: top.vocabulary,
+                    style: TextStyle(
+                        color: topColor,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w200,
+                        height: 1)),
+                TextSpan(
+                    text: ' $pct%',
+                    style: TextStyle(
+                        color: topColor, fontSize: 9, letterSpacing: 0.3)),
+              ])),
+            ),
+            const SizedBox(width: 8),
+            // Các candidates còn lại
+            ...candidates.skip(1).map((c) {
+              final p = (c.score * 100).round();
+              return Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                      border: Border.all(color: kBorder),
+                      borderRadius: BorderRadius.circular(3)),
+                  child: RichText(
+                      text: TextSpan(children: [
+                    TextSpan(
+                        text: c.vocabulary,
+                        style: const TextStyle(
+                            color: kTextSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w200,
+                            height: 1)),
+                    TextSpan(
+                        text: ' $p%',
+                        style: const TextStyle(
+                            color: kTextMuted,
+                            fontSize: 9,
+                            letterSpacing: 0.3)),
+                  ])),
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+}
 // ── Bottom bar (fixed height, below canvas) ───────────────────────────────────
 
 class _BottomBar extends StatelessWidget {
@@ -893,7 +981,7 @@ class _BottomBar extends StatelessWidget {
   Widget build(BuildContext context) => const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _RealtimePredictionPanel(),
+          // _RealtimePredictionPanel() ← xóa dòng này
           _SampleBar(),
         ],
       );
