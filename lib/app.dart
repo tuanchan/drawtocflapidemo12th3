@@ -1436,26 +1436,57 @@ class _InfoArea extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     if (state.pinnedEntry != null) {
+      final entry = state.pinnedEntry!;
       return SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Embeddings chip
-          FutureBuilder<int>(
-            future: DbService.getEmbeddingCount(state.pinnedEntry!.vocabulary),
-            builder: (ctx, snap) => _StatChip(
-              label: 'Embeddings',
-              value: '${snap.data ?? 0}',
-              highlight: (snap.data ?? 0) >= 10,
+          // ── Chữ to lên đầu ──────────────────────────────────────────────
+          Text(entry.vocabulary,
+              style: const TextStyle(
+                  color: kAccent,
+                  fontSize: 72,
+                  fontWeight: FontWeight.w200,
+                  height: 1)),
+          const SizedBox(height: 8),
+          // ── Chip % top candidate ─────────────────────────────────────────
+          if (state.realtimeCandidates.isNotEmpty)
+            _TopCandidateChips(candidates: state.realtimeCandidates),
+          const SizedBox(height: 8),
+          // ── Metadata ─────────────────────────────────────────────────────
+          if (entry.pinyin != null)
+            Text(entry.pinyin!,
+                style: const TextStyle(
+                    color: kTextPrimary, fontSize: 16, letterSpacing: 0.5)),
+          if (entry.bopomofo != null)
+            Text(entry.bopomofo!,
+                style: const TextStyle(color: kTextSecondary, fontSize: 13)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 6, runSpacing: 4, children: [
+            if (entry.levelCode != null) _Tag(entry.levelCode!),
+            if (entry.context != null) _Tag(entry.context!),
+            if (entry.partOfSpeech != null) _Tag(entry.partOfSpeech!),
+          ]),
+          if (entry.variantGroup != null) ...[
+            const SizedBox(height: 4),
+            Text('異體字 ${entry.variantGroup!}',
+                style: const TextStyle(color: kTextMuted, fontSize: 10)),
+          ],
+          const SizedBox(height: 10),
+          _SearchBtn(char: entry.vocabulary),
+          const SizedBox(height: 10),
+          const Divider(color: kBorder, height: 1),
+          const SizedBox(height: 8),
+          // ── Stats ─────────────────────────────────────────────────────────
+          Wrap(spacing: 6, runSpacing: 4, children: [
+            FutureBuilder<int>(
+              future: DbService.getEmbeddingCount(entry.vocabulary),
+              builder: (ctx, snap) => _StatChip(
+                label: 'Embeddings',
+                value: '${snap.data ?? 0}',
+                highlight: (snap.data ?? 0) >= 10,
+              ),
             ),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(top: 8, bottom: 10),
-            child: Divider(color: kBorder, height: 1, thickness: 1),
-          ),
-          _EntryCard(
-              entry: state.pinnedEntry!,
-              showStrokeOrder: true,
-              showEmbeddingCount: false),
+          ]),
           if (state.similarityResult != null) ...[
             const SizedBox(height: 6),
             _SimilarityBadge(result: state.similarityResult!),
@@ -1470,6 +1501,52 @@ class _InfoArea extends StatelessWidget {
   }
 }
 
+class _TopCandidateChips extends StatelessWidget {
+  final List<ProtoMatchCandidate> candidates;
+  const _TopCandidateChips({required this.candidates});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: candidates.take(4).map((c) {
+        final pct = (c.score * 100).round();
+        final isTop = c == candidates.first;
+        final color = isTop
+            ? (pct >= 80
+                ? kSuccess
+                : pct >= 60
+                    ? kAccent
+                    : kTextSecondary)
+            : kTextMuted;
+        return Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+                border:
+                    Border.all(color: isTop ? color.withOpacity(0.5) : kBorder),
+                borderRadius: BorderRadius.circular(3)),
+            child: RichText(
+                text: TextSpan(children: [
+              TextSpan(
+                  text: c.vocabulary,
+                  style: TextStyle(
+                      color: isTop ? color : kTextMuted,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w200)),
+              TextSpan(
+                  text: ' $pct%',
+                  style: TextStyle(
+                      color: isTop ? color : kTextMuted,
+                      fontSize: 9,
+                      letterSpacing: 0.3)),
+            ])),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
 // ── Result area ───────────────────────────────────────────────────────────────
 
 class _ResultArea extends StatelessWidget {
@@ -1559,7 +1636,7 @@ class _EntryCard extends StatelessWidget {
         ]),
         if (showStrokeOrder) ...[
           const SizedBox(height: 8),
-          _StrokeOrderBtn(char: entry.vocabulary)
+          _SearchBtn(char: entry.vocabulary)
         ],
         const SizedBox(height: 4),
         const Divider(color: kBorder, height: 1),
@@ -1611,9 +1688,9 @@ class _EmbeddingCountBadge extends StatelessWidget {
 
 // ── Stroke order button ───────────────────────────────────────────────────────
 
-class _StrokeOrderBtn extends StatelessWidget {
+class _SearchBtn extends StatelessWidget {
   final String char;
-  const _StrokeOrderBtn({required this.char});
+  const _SearchBtn({required this.char});
 
   @override
   Widget build(BuildContext context) {
