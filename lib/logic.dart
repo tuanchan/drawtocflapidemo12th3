@@ -943,7 +943,7 @@ class DbService {
 // ── Embedding Encoder ─────────────────────────────────────────────────────────
 
 class EmbeddingEncoder {
-  static const int dim = 64;
+  static const int dim = 128;
 
   // ── Imported model metadata (populated by ModelImportService) ─────────────
   static String? _localModelPath;
