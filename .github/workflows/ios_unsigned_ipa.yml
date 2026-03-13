@@ -70,6 +70,7 @@ jobs:
         run: |
           sed -i '' 's/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = "";/g' \
             ios/Runner.xcodeproj/project.pbxproj
+          set -o pipefail
           gem install xcpretty --no-document 2>/dev/null || true
           xcodebuild \
             -workspace ios/Runner.xcworkspace \
@@ -81,7 +82,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
-            | xcpretty || true
+            | xcpretty
           mkdir -p build/ios/iphoneos
           cp -R build/ios/DerivedData/Build/Products/Release-iphoneos/Runner.app \
             build/ios/iphoneos/Runner.app
