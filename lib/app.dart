@@ -344,6 +344,31 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               ),
             ]),
             const SizedBox(height: 16),
+            Row(children: [
+              const Text('stroke width',
+                  style: TextStyle(
+                      color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: kAccent.withOpacity(0.6),
+                    inactiveTrackColor: kBorder,
+                    thumbColor: kAccent,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    trackHeight: 1.5,
+                    overlayShape: SliderComponentShape.noOverlay,
+                  ),
+                  child: Slider(
+                    value: appState.strokeWidth,
+                    min: 4.0,
+                    max: 24.0,
+                    onChanged: (v) => appState.setStrokeWidth(v),
+                  ),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 10),
             _SettingsField(
                 label: 'server url',
                 controller: _serverUrlCtrl,
@@ -1080,27 +1105,6 @@ class _CanvasControls extends StatelessWidget {
           enabled: state.pinnedEntry != null,
           onTap: () => context.read<AppState>().togglePinnedTemplate(),
         ),
-        const SizedBox(width: 10),
-        const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
-        Expanded(
-          child: SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: kAccent.withOpacity(0.6),
-              inactiveTrackColor: kBorder,
-              thumbColor: kAccent,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-              trackHeight: 1.5,
-              overlayShape: SliderComponentShape.noOverlay,
-            ),
-            child: Slider(
-              value: state.strokeWidth,
-              min: 4.0,
-              max: 24.0,
-              onChanged: (v) => context.read<AppState>().setStrokeWidth(v),
-            ),
-          ),
-        ),
-        const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
       ]),
     );
   }

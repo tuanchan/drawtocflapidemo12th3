@@ -1541,6 +1541,7 @@ class PrototypeService {
         final old = (jsonDecode(proto['prototype_json'] as String) as List)
             .map((e) => (e as num).toDouble())
             .toList();
+
         newProto = List.generate(
           embedding.length,
           (i) => old[i] * (1 - _alpha) + embedding[i] * _alpha,
@@ -1568,10 +1569,12 @@ class PrototypeService {
   }) async {
     final proto = await DbService.getPrototype(vocabulary);
     if (proto == null) return null;
+
     final protoVec = (jsonDecode(proto['prototype_json'] as String) as List)
         .map((e) => (e as num).toDouble())
         .toList();
-    return _cosine(embedding, protoVec);
+
+    return cosine01(embedding, protoVec);
   }
 
   static Future<double?> similarityToPrototype({
@@ -1581,20 +1584,28 @@ class PrototypeService {
     return computeSimilarity(vocabulary: vocabulary, embedding: embedding);
   }
 
-  static double _cosine(List<double> a, List<double> b) {
+  static double rawCosine(List<double> a, List<double> b) {
     double dot = 0, nA = 0, nB = 0;
     final len = math.min(a.length, b.length);
+
     for (var i = 0; i < len; i++) {
       dot += a[i] * b[i];
       nA += a[i] * a[i];
       nB += b[i] * b[i];
     }
+
     final d = math.sqrt(nA) * math.sqrt(nB);
-    return d < 1e-10 ? 0.0 : (dot / d).clamp(0.0, 1.0);
+    if (d < 1e-10) return 0.0;
+
+    return dot / d; // giữ nguyên [-1..1], KHÔNG clamp 0..1
   }
 
-  /// Public alias used by AppState realtime compare.
-  static double cosine(List<double> a, List<double> b) => _cosine(a, b);
+  static double cosine01(List<double> a, List<double> b) {
+    final raw = rawCosine(a, b);
+    return ((raw + 1.0) / 2.0).clamp(0.0, 1.0); // map sang % hiển thị
+  }
+
+  static double cosine(List<double> a, List<double> b) => cosine01(a, b);
 }
 
 // ── Local Learning Service ────────────────────────────────────────────────────
