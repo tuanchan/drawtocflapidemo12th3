@@ -148,6 +148,19 @@ class RecResult {
   });
 }
 
+// ── Toast Message ─────────────────────────────────────────────────────────────
+
+/// Carries a one-shot toast payload.  UI calls [consume] after showing it.
+class ToastMessage {
+  final String char;
+  final int embeddingCount;
+
+  const ToastMessage({required this.char, required this.embeddingCount});
+
+  /// E.g.  "學 · 嵌入 #7"
+  String get label => '$char · 嵌入 #$embeddingCount';
+}
+
 // ── Stroke Serializer ─────────────────────────────────────────────────────────
 
 class StrokeSerializer {
@@ -693,6 +706,10 @@ class AppState extends ChangeNotifier {
 
   SimilarityResult? _similarityResult;
 
+  /// One-shot toast fired after an embedding is saved.
+  /// UI should read and then call [consumeToast].
+  ToastMessage? _pendingToast;
+
   bool get ready => _ready;
   String? get initError => _initError;
   bool get busy => _busy;
@@ -705,6 +722,14 @@ class AppState extends ChangeNotifier {
   VocabEntry? get pinnedEntry => _pinnedEntry;
   bool get showPinnedTemplate => _showPinnedTemplate;
   SimilarityResult? get similarityResult => _similarityResult;
+  ToastMessage? get pendingToast => _pendingToast;
+
+  /// Called by the UI after it has displayed the toast.
+  void consumeToast() {
+    if (_pendingToast == null) return;
+    _pendingToast = null;
+    // No notifyListeners — avoids rebuild loop.
+  }
 
   Future<void> init() async {
     try {
@@ -824,20 +849,26 @@ class AppState extends ChangeNotifier {
       final tokens = _buildLookupTokens(raw);
       var matches = await DbService.findByVocabularyTokens(tokens);
 
-      // Boost: ưu tiên chữ đã luyện nhiều
       final vocabs = matches.map((e) => e.vocabulary).toList();
       final boosts = await LocalLearningService.getBoostScores(vocabs);
       matches = _sortMatchesByCandidateOrder(matches, raw, boosts);
 
       _result = RecResult(matches: matches, raw: raw);
 
-      // Local learning: lưu sample + tính similarity
+      // ── Local learning: save embedding + similarity + toast ──────────────
       if (_showPinnedTemplate && _pinnedEntry != null) {
         _similarityResult = await LocalLearningService.onCheck(
           strokes: _canvas.strokes,
           vocabulary: _pinnedEntry!.vocabulary,
           ocrRaw: raw,
           strokeWidth: _strokeWidth,
+        );
+
+        // Count total embeddings saved for this character and fire toast.
+        final count = await DbService.getSampleCount(_pinnedEntry!.vocabulary);
+        _pendingToast = ToastMessage(
+          char: _pinnedEntry!.vocabulary,
+          embeddingCount: count,
         );
       }
     } catch (e, st) {
@@ -894,7 +925,7 @@ class AppState extends ChangeNotifier {
       final diff = score(a).compareTo(score(b));
       if (diff != 0) return diff;
       if (a.vocabulary.length != b.vocabulary.length) {
-        return a.vocabulary.length.compareTo(b.vocabulary.length);
+        return a.vocabulary.compareTo(b.vocabulary);
       }
       return a.vocabulary.compareTo(b.vocabulary);
     });

@@ -38,12 +38,49 @@ class _MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<_MainScreen> {
+  OverlayEntry? _toastEntry;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().init();
+      // Listen for toast signals after the first frame.
+      context.read<AppState>().addListener(_onStateChange);
     });
+  }
+
+  @override
+  void dispose() {
+    context.read<AppState>().removeListener(_onStateChange);
+    _toastEntry?.remove();
+    super.dispose();
+  }
+
+  void _onStateChange() {
+    final state = context.read<AppState>();
+    final toast = state.pendingToast;
+    if (toast == null) return;
+    state.consumeToast();
+    _showEmbeddingToast(toast);
+  }
+
+  void _showEmbeddingToast(ToastMessage toast) {
+    _toastEntry?.remove();
+    _toastEntry = null;
+
+    final entry = OverlayEntry(
+      builder: (_) => _EmbeddingToast(
+        message: toast,
+        onDone: () {
+          _toastEntry?.remove();
+          _toastEntry = null;
+        },
+      ),
+    );
+
+    _toastEntry = entry;
+    Overlay.of(context).insert(entry);
   }
 
   @override
@@ -78,6 +115,119 @@ class _MainScreenState extends State<_MainScreen> {
     return const Scaffold(
       backgroundColor: kBg,
       body: SafeArea(child: _Body()),
+    );
+  }
+}
+
+// ── Embedding Toast Overlay ───────────────────────────────────────────────────
+
+class _EmbeddingToast extends StatefulWidget {
+  final ToastMessage message;
+  final VoidCallback onDone;
+
+  const _EmbeddingToast({required this.message, required this.onDone});
+
+  @override
+  State<_EmbeddingToast> createState() => _EmbeddingToastState();
+}
+
+class _EmbeddingToastState extends State<_EmbeddingToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _opacity;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
+    );
+
+    _opacity = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+
+    _ctrl.forward();
+
+    // Auto-dismiss after 2.4 s
+    Future.delayed(const Duration(milliseconds: 2400), () {
+      if (mounted) {
+        _ctrl.reverse().then((_) => widget.onDone());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      bottom: 24,
+      right: 16,
+      child: FadeTransition(
+        opacity: _opacity,
+        child: SlideTransition(
+          position: _slide,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: kSurface,
+                border: Border.all(color: kAccentDim, width: 1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Large character glyph
+                  Text(
+                    widget.message.char,
+                    style: const TextStyle(
+                      color: kAccent,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w200,
+                      height: 1,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        '嵌入已儲存',
+                        style: TextStyle(
+                            color: kTextSecondary,
+                            fontSize: 9,
+                            letterSpacing: 0.8),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '#${widget.message.embeddingCount}',
+                        style: const TextStyle(
+                          color: kAccent,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
