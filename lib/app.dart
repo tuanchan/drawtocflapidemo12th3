@@ -438,6 +438,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     label: 'model',
                     value: s.lastImportedModelVersion!,
                     ok: modelHasLocal),
+              _PrototypeCountChip(),
             ]),
             const SizedBox(height: 14),
             Row(children: [
@@ -498,6 +499,24 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   }
 }
 
+class _PrototypeCountChip extends StatelessWidget {
+  const _PrototypeCountChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: DbService.getAllPrototypes(),
+      builder: (ctx, snap) {
+        final count = snap.data?.length ?? 0;
+        return _InfoChip(
+          label: 'prototypes',
+          value: '$count',
+          ok: count > 0 ? true : false,
+        );
+      },
+    );
+  }
+}
 // ── Settings field ────────────────────────────────────────────────────────────
 
 class _SettingsField extends StatelessWidget {
