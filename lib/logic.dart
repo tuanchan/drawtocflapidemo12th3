@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
@@ -20,6 +21,10 @@ const String kTable = 'vocab_clean';
 
 const String kMlKitLanguageCode = 'zh-Hant';
 const int kTopK = 10;
+
+// ── Platform helper ───────────────────────────────────────────────────────────
+
+bool get _isMlKitSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
 // ── Stroke / Canvas ───────────────────────────────────────────────────────────
 
@@ -323,6 +328,8 @@ class AppState extends ChangeNotifier {
   VocabEntry? _pinnedEntry;
   Timer? _searchDebounce;
 
+  bool _showPinnedTemplate = false;
+
   bool get ready => _ready;
   String? get initError => _initError;
   bool get busy => _busy;
@@ -333,11 +340,15 @@ class AppState extends ChangeNotifier {
   String get searchQuery => _searchQuery;
   List<VocabEntry> get searchSuggestions => _searchSuggestions;
   VocabEntry? get pinnedEntry => _pinnedEntry;
+  bool get showPinnedTemplate => _showPinnedTemplate;
 
   Future<void> init() async {
     try {
       await DbService.init();
-      await DigitalInkService.prepare();
+
+      if (_isMlKitSupported) {
+        await DigitalInkService.prepare();
+      }
     } catch (e, st) {
       debugPrint('[AppState.init] $e');
       debugPrint(st.toString());
@@ -350,6 +361,11 @@ class AppState extends ChangeNotifier {
 
   void setStrokeWidth(double v) {
     _strokeWidth = v.clamp(4.0, 24.0);
+    notifyListeners();
+  }
+
+  void togglePinnedTemplate() {
+    _showPinnedTemplate = !_showPinnedTemplate;
     notifyListeners();
   }
 
@@ -402,6 +418,7 @@ class AppState extends ChangeNotifier {
 
   void selectSuggestion(VocabEntry entry) {
     _pinnedEntry = entry;
+    _showPinnedTemplate = true;
     _searchQuery = '';
     _searchSuggestions = [];
     notifyListeners();
@@ -409,11 +426,21 @@ class AppState extends ChangeNotifier {
 
   void resetPinned() {
     _pinnedEntry = null;
+    _showPinnedTemplate = false;
     notifyListeners();
   }
 
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
+
+    if (!_isMlKitSupported) {
+      _result = const RecResult(
+        error:
+            'ML Kit Digital Ink chỉ hỗ trợ Android/iOS, không chạy trên Windows.',
+      );
+      notifyListeners();
+      return;
+    }
 
     _busy = true;
     _result = null;

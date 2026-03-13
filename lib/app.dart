@@ -142,8 +142,12 @@ class _DrawCanvas extends StatelessWidget {
               onPanCancel: () => context.read<AppState>().strokeEnd(),
               child: CustomPaint(
                 size: Size(sz, sz),
-                painter: _CanvasPainter(state.canvas,
-                    state.pinnedEntry?.vocabulary, state.strokeWidth),
+                painter: _CanvasPainter(
+                  state.canvas,
+                  state.pinnedEntry?.vocabulary,
+                  state.strokeWidth,
+                  state.showPinnedTemplate,
+                ),
               ),
             ),
           ),
@@ -157,8 +161,14 @@ class _CanvasPainter extends CustomPainter {
   final CanvasData canvas;
   final String? hint;
   final double strokeWidth;
+  final bool showPinnedTemplate;
 
-  _CanvasPainter(this.canvas, this.hint, this.strokeWidth);
+  _CanvasPainter(
+    this.canvas,
+    this.hint,
+    this.strokeWidth,
+    this.showPinnedTemplate,
+  );
 
   @override
   void paint(Canvas c, Size sz) {
@@ -184,12 +194,15 @@ class _CanvasPainter extends CustomPainter {
         ..strokeWidth = 1,
     );
 
-    if (!canvas.hasStrokes && hint != null) {
+    final shouldShowHint =
+        hint != null && (showPinnedTemplate || !canvas.hasStrokes);
+
+    if (shouldShowHint) {
       final tp = TextPainter(
         text: TextSpan(
           text: hint,
           style: TextStyle(
-            color: kAccent.withOpacity(0.12),
+            color: kAccent.withOpacity(showPinnedTemplate ? 0.18 : 0.12),
             fontSize: sz.width * 0.55,
             fontWeight: FontWeight.w200,
             height: 1,
@@ -199,7 +212,9 @@ class _CanvasPainter extends CustomPainter {
       );
       tp.layout();
       tp.paint(
-          c, Offset((sz.width - tp.width) / 2, (sz.height - tp.height) / 2));
+        c,
+        Offset((sz.width - tp.width) / 2, (sz.height - tp.height) / 2),
+      );
     }
 
     final ink = Paint()
@@ -212,8 +227,11 @@ class _CanvasPainter extends CustomPainter {
     void draw(StrokeData s) {
       if (s.points.isEmpty) return;
       if (s.points.length == 1) {
-        c.drawCircle(Offset(s.points.first.x * scale, s.points.first.y * scale),
-            5 * scale, ink);
+        c.drawCircle(
+          Offset(s.points.first.x * scale, s.points.first.y * scale),
+          5 * scale,
+          ink,
+        );
         return;
       }
       final path = Path()
@@ -234,7 +252,8 @@ class _CanvasPainter extends CustomPainter {
   bool shouldRepaint(_CanvasPainter old) =>
       old.canvas != canvas ||
       old.hint != hint ||
-      old.strokeWidth != strokeWidth;
+      old.strokeWidth != strokeWidth ||
+      old.showPinnedTemplate != showPinnedTemplate;
 }
 
 class _CanvasControls extends StatelessWidget {
@@ -277,6 +296,12 @@ class _CanvasControls extends StatelessWidget {
               label: 'clear',
               enabled: state.canvas.hasStrokes,
               onTap: () => context.read<AppState>().clear()),
+          const SizedBox(width: 8),
+          _Btn(
+            label: state.showPinnedTemplate ? 'template on' : 'template',
+            enabled: state.pinnedEntry != null,
+            onTap: () => context.read<AppState>().togglePinnedTemplate(),
+          ),
           const SizedBox(width: 8),
           _Btn(
             label: state.busy ? '…' : 'check',
