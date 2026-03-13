@@ -27,22 +27,6 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # FIX: Dùng install.sh chính thức của tflite_flutter package
-      - name: Setup TFLite iOS binaries
-        run: |
-          # Tìm install.sh trong pub-cache (tflite_flutter 0.10.x có script này)
-          INSTALL_SH=$(find $HOME/.pub-cache -path "*/tflite_flutter-*/install.sh" 2>/dev/null | head -1)
-
-          if [ -n "$INSTALL_SH" ]; then
-            echo "✅ Running official install script: $INSTALL_SH"
-            bash "$INSTALL_SH"
-          else
-            echo "❌ install.sh not found in pub-cache"
-            echo "Pub-cache tflite contents:"
-            find $HOME/.pub-cache -path "*tflite*" -type f 2>/dev/null | head -20
-            exit 1
-          fi
-
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons
 
@@ -89,6 +73,10 @@ jobs:
             use_frameworks!
             use_modular_headers!
 
+            # TFLite framework — CocoaPods tự fetch đúng version
+            pod 'TensorFlowLiteC', '2.12.0'
+            pod 'TensorFlowLiteSelectTfOps', '2.12.0'
+
             flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
           end
 
@@ -126,13 +114,17 @@ jobs:
         working-directory: ios
         run: pod install --repo-update
 
+      - name: Verify TFLite pod installed
+        run: |
+          echo "=== Checking TFLite in Pods ==="
+          find ios/Pods -name "*TensorFlow*" -o -name "*tflite*" 2>/dev/null | head -20
+
       - name: Flutter build iOS release (no codesign)
         run: flutter build ios --release --no-codesign
 
       - name: Verify Runner.app exists
         run: |
           test -d build/ios/iphoneos/Runner.app || (echo "Runner.app not found" && exit 1)
-          ls -la build/ios/iphoneos
           ls -la build/ios/iphoneos/Runner.app
 
       - name: Package unsigned IPA
