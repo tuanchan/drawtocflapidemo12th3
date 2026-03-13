@@ -2,12 +2,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
-    as mlkit;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -18,13 +17,13 @@ const double kLogicalSize = 360.0;
 const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
 const String kDbFile = 'tocfl_vocab_clean.db';
 const String kTable = 'vocab_clean';
-
-const String kMlKitLanguageCode = 'zh-Hant';
 const int kTopK = 10;
+
+const MethodChannel _visionChannel = MethodChannel('tocfl_writer/vision_ocr');
 
 // ── Platform helper ───────────────────────────────────────────────────────────
 
-bool get _isMlKitSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+bool get _isIOS => !kIsWeb && Platform.isIOS;
 
 // ── Stroke / Canvas ───────────────────────────────────────────────────────────
 
@@ -231,85 +230,90 @@ class DbService {
   }
 }
 
-// ── ML Kit Digital Ink Service ───────────────────────────────────────────────
+// ── Canvas Render Service ─────────────────────────────────────────────────────
 
-class DigitalInkService {
-  static final mlkit.DigitalInkRecognizerModelManager _modelManager =
-      mlkit.DigitalInkRecognizerModelManager();
-
-  static mlkit.DigitalInkRecognizer? _recognizer;
-  static bool _prepared = false;
-  static Future<void>? _downloading;
-
-  static Future<void> prepare() async {
-    if (_prepared) return;
-    _recognizer = mlkit.DigitalInkRecognizer(
-      languageCode: kMlKitLanguageCode,
-    );
-    _prepared = true;
-  }
-
-  static Future<void> ensureModelDownloaded() async {
-    await prepare();
-
-    final downloaded =
-        await _modelManager.isModelDownloaded(kMlKitLanguageCode);
-    if (downloaded) return;
-
-    _downloading ??= () async {
-      final ok = await _modelManager.downloadModel(kMlKitLanguageCode);
-      if (!ok) {
-        throw Exception(
-          'Không tải được model ML Kit ($kMlKitLanguageCode). Bật mạng rồi thử lại.',
-        );
-      }
-    }();
-
-    try {
-      await _downloading;
-    } finally {
-      _downloading = null;
-    }
-  }
-
-  static Future<List<mlkit.RecognitionCandidate>> recognize(
+class CanvasRenderService {
+  static Future<Uint8List> renderPngBytes(
     List<StrokeData> strokes, {
-    String preContext = '',
+    required double strokeWidth,
+    int imageSize = 512,
   }) async {
-    if (strokes.isEmpty) return [];
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final scale = imageSize / kLogicalSize;
 
-    await prepare();
-    await ensureModelDownloaded();
-
-    final ink = mlkit.Ink();
-    ink.strokes = strokes.map(_toMlStroke).toList();
-
-    final context = mlkit.DigitalInkRecognitionContext(
-      preContext: preContext,
-      writingArea: mlkit.WritingArea(
-        width: kLogicalSize,
-        height: kLogicalSize,
-      ),
+    // nền trắng cho OCR
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, imageSize.toDouble(), imageSize.toDouble()),
+      Paint()..color = Colors.white,
     );
 
-    return _recognizer!.recognize(
-      ink,
-      context: context,
-    );
+    // vẽ nét đen
+    final ink = Paint()
+      ..color = Colors.black
+      ..strokeWidth = strokeWidth * scale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    for (final s in strokes) {
+      if (s.points.isEmpty) continue;
+
+      if (s.points.length == 1) {
+        canvas.drawCircle(
+          Offset(s.points.first.x * scale, s.points.first.y * scale),
+          (strokeWidth * 0.5 + 1.0) * scale,
+          ink,
+        );
+        continue;
+      }
+
+      final path = Path()
+        ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
+
+      for (final pt in s.points.skip(1)) {
+        path.lineTo(pt.x * scale, pt.y * scale);
+      }
+      canvas.drawPath(path, ink);
+    }
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(imageSize, imageSize);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+
+    if (byteData == null) {
+      throw Exception('Không render được canvas thành PNG.');
+    }
+
+    return byteData.buffer.asUint8List();
   }
+}
 
-  static mlkit.Stroke _toMlStroke(StrokeData stroke) {
-    final s = mlkit.Stroke();
-    s.points = stroke.points
-        .map((p) => mlkit.StrokePoint(x: p.x, y: p.y, t: p.t))
+// ── Vision OCR Service (iOS native bridge) ────────────────────────────────────
+
+class VisionOcrService {
+  static Future<List<String>> recognizeCanvasPng(
+    Uint8List pngBytes, {
+    int maxCandidates = kTopK,
+  }) async {
+    if (!_isIOS) {
+      throw Exception('Vision OCR bridge hiện chỉ hỗ trợ iOS.');
+    }
+
+    final result = await _visionChannel.invokeMethod<List<dynamic>>(
+      'recognizeCanvasText',
+      <String, dynamic>{
+        'imageBytes': pngBytes,
+        'maxCandidates': maxCandidates,
+        'recognitionLevel': 'accurate',
+        'languages': <String>['zh-Hant', 'zh-Hans', 'en-US'],
+      },
+    );
+
+    return (result ?? const [])
+        .map((e) => e?.toString().trim() ?? '')
+        .where((e) => e.isNotEmpty)
         .toList();
-    return s;
-  }
-
-  static void close() {
-    _recognizer?.close();
-    _recognizer = null;
-    _prepared = false;
   }
 }
 
@@ -345,10 +349,6 @@ class AppState extends ChangeNotifier {
   Future<void> init() async {
     try {
       await DbService.init();
-
-      if (_isMlKitSupported) {
-        await DigitalInkService.prepare();
-      }
     } catch (e, st) {
       debugPrint('[AppState.init] $e');
       debugPrint(st.toString());
@@ -433,10 +433,9 @@ class AppState extends ChangeNotifier {
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
 
-    if (!_isMlKitSupported) {
+    if (!_isIOS) {
       _result = const RecResult(
-        error:
-            'ML Kit Digital Ink chỉ hỗ trợ Android/iOS, không chạy trên Windows.',
+        error: 'Bản Vision OCR này chỉ chạy trên iPhone/iOS.',
       );
       notifyListeners();
       return;
@@ -447,16 +446,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final candidates = await DigitalInkService.recognize(
+      final pngBytes = await CanvasRenderService.renderPngBytes(
         _canvas.strokes,
-        preContext: _pinnedEntry?.vocabulary ?? '',
+        strokeWidth: _strokeWidth,
       );
 
-      final raw = candidates
-          .map((e) => e.text.trim())
-          .where((e) => e.isNotEmpty)
-          .take(kTopK)
-          .toList();
+      final raw = await VisionOcrService.recognizeCanvasPng(
+        pngBytes,
+        maxCandidates: kTopK,
+      );
 
       if (raw.isEmpty) {
         _result = const RecResult(raw: []);
@@ -535,7 +533,6 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    DigitalInkService.close();
     super.dispose();
   }
 }
