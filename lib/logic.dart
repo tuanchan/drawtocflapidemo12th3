@@ -841,7 +841,38 @@ class AppState extends ChangeNotifier {
         maxCandidates: kTopK,
       );
 
-      if (raw.isEmpty) {
+      // ── Feature-based fallback when OCR misses the pinned character ────────
+      // If tmpl is active and we have ≥3 embeddings, compute cosine similarity.
+      // If the score clears the threshold, inject the pinned entry as top match
+      // regardless of what OCR said (or didn't say).
+      VocabEntry? featureInjected;
+      if (_showPinnedTemplate && _pinnedEntry != null) {
+        final sampleRows = await DbService.getRecentSamples(
+            _pinnedEntry!.vocabulary,
+            limit: 10);
+        if (sampleRows.length >= 3) {
+          final stored = <StrokeFeatures>[];
+          for (final row in sampleRows) {
+            final fj = row['feature_json'] as String?;
+            if (fj != null && fj.isNotEmpty) {
+              try {
+                stored.add(StrokeFeatures.fromJson(fj));
+              } catch (_) {}
+            }
+          }
+          if (stored.isNotEmpty) {
+            final cur = StrokeFeatures.fromStrokes(_canvas.strokes);
+            final sim = cur.cosineSimilarity(StrokeFeatures.average(stored));
+            // Threshold: ≥0.60 → inject; more samples → lower threshold.
+            final thresh = stored.length >= 7 ? 0.55 : 0.60;
+            if (sim >= thresh) {
+              featureInjected = _pinnedEntry;
+            }
+          }
+        }
+      }
+
+      if (raw.isEmpty && featureInjected == null) {
         _result = const RecResult(raw: []);
         return;
       }
@@ -849,9 +880,21 @@ class AppState extends ChangeNotifier {
       final tokens = _buildLookupTokens(raw);
       var matches = await DbService.findByVocabularyTokens(tokens);
 
+      // Inject feature-matched pinned entry at top if not already present.
+      if (featureInjected != null &&
+          !matches.any((e) => e.vocabulary == featureInjected!.vocabulary)) {
+        matches = [featureInjected!, ...matches];
+      }
+
       final vocabs = matches.map((e) => e.vocabulary).toList();
       final boosts = await LocalLearningService.getBoostScores(vocabs);
-      matches = _sortMatchesByCandidateOrder(matches, raw, boosts);
+      // When feature-injected, keep it pinned at top regardless of sort.
+      final sortedTail = featureInjected != null
+          ? _sortMatchesByCandidateOrder(matches.skip(1).toList(), raw, boosts)
+          : _sortMatchesByCandidateOrder(matches, raw, boosts);
+      matches = featureInjected != null
+          ? [featureInjected!, ...sortedTail]
+          : sortedTail;
 
       _result = RecResult(matches: matches, raw: raw);
 

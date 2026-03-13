@@ -188,39 +188,35 @@ class _EmbeddingToastState extends State<_EmbeddingToast>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Large character glyph
-                  Text(
-                    widget.message.char,
-                    style: const TextStyle(
-                      color: kAccent,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w200,
-                      height: 1,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
+                  // Character glyph + count below
                   Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text(
-                        '嵌入已儲存',
-                        style: TextStyle(
-                            color: kTextSecondary,
-                            fontSize: 9,
-                            letterSpacing: 0.8),
+                      Text(
+                        widget.message.char,
+                        style: const TextStyle(
+                          color: kAccent,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w200,
+                          height: 1,
+                        ),
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(height: 3),
                       Text(
                         '#${widget.message.embeddingCount}',
                         style: const TextStyle(
-                          color: kAccent,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
+                          color: kTextMuted,
+                          fontSize: 9,
                           letterSpacing: 0.5,
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    '嵌入已儲存',
+                    style: TextStyle(
+                        color: kTextSecondary, fontSize: 9, letterSpacing: 0.8),
                   ),
                 ],
               ),
@@ -758,7 +754,11 @@ class _InfoArea extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _EntryCard(entry: state.pinnedEntry!, showStrokeOrder: true),
+            _EntryCard(
+              entry: state.pinnedEntry!,
+              showStrokeOrder: true,
+              showEmbeddingCount: true,
+            ),
           ],
         ),
       );
@@ -816,7 +816,12 @@ class _ResultArea extends StatelessWidget {
 class _EntryCard extends StatelessWidget {
   final VocabEntry entry;
   final bool showStrokeOrder;
-  const _EntryCard({required this.entry, this.showStrokeOrder = false});
+  final bool showEmbeddingCount;
+  const _EntryCard({
+    required this.entry,
+    this.showStrokeOrder = false,
+    this.showEmbeddingCount = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -824,12 +829,19 @@ class _EntryCard extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(entry.vocabulary,
-              style: const TextStyle(
-                  color: kAccent,
-                  fontSize: 48,
-                  fontWeight: FontWeight.w200,
-                  height: 1)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(entry.vocabulary,
+                  style: const TextStyle(
+                      color: kAccent,
+                      fontSize: 48,
+                      fontWeight: FontWeight.w200,
+                      height: 1)),
+              if (showEmbeddingCount)
+                _EmbeddingCountBadge(vocabulary: entry.vocabulary),
+            ],
+          ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -867,6 +879,53 @@ class _EntryCard extends StatelessWidget {
         const SizedBox(height: 4),
         const Divider(color: kBorder, height: 1),
       ]),
+    );
+  }
+}
+
+// ── Embedding Count Badge ─────────────────────────────────────────────────────
+
+class _EmbeddingCountBadge extends StatelessWidget {
+  final String vocabulary;
+  const _EmbeddingCountBadge({required this.vocabulary});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<int>(
+      future: DbService.getSampleCount(vocabulary),
+      builder: (ctx, snap) {
+        final count = snap.data ?? 0;
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: count > 0 ? kAccentDim : kBorder,
+              ),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: RichText(
+              text: TextSpan(children: [
+                TextSpan(
+                  text: '嵌入 ',
+                  style: const TextStyle(
+                      color: kTextMuted, fontSize: 8, letterSpacing: 0.5),
+                ),
+                TextSpan(
+                  text: '$count',
+                  style: TextStyle(
+                    color: count > 0 ? kAccent : kTextMuted,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        );
+      },
     );
   }
 }
