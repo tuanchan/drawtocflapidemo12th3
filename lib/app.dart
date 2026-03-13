@@ -1058,6 +1058,8 @@ class _CanvasControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final isPinned = state.pinnedEntry != null;
+    final clearLabel = isPinned ? 'Save+Clear' : 'Clear';
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
       child: Row(children: [
@@ -1067,21 +1069,32 @@ class _CanvasControls extends StatelessWidget {
             onTap: () => context.read<AppState>().undo()),
         const SizedBox(width: 6),
         _Btn(
-            label: 'Clear',
-            enabled: state.canvas.hasStrokes,
-            onTap: () => context.read<AppState>().clear()),
+          label: state.busy ? '…' : clearLabel,
+          enabled: state.canvas.hasStrokes && !state.busy,
+          accent: isPinned,
+          onTap: () async {
+            if (isPinned) {
+              final ok = await context.read<AppState>().saveAndClearPinned();
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(ok ? 'Sample saved' : 'Save failed',
+                    style:
+                        TextStyle(color: ok ? kSuccess : kError, fontSize: 11)),
+                backgroundColor: kSurface,
+                duration: const Duration(milliseconds: 1400),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ));
+            } else {
+              context.read<AppState>().clear();
+            }
+          },
+        ),
         const SizedBox(width: 6),
         _Btn(
           label: state.showPinnedTemplate ? 'Template ●' : 'Template',
           enabled: state.pinnedEntry != null,
           onTap: () => context.read<AppState>().togglePinnedTemplate(),
-        ),
-        const SizedBox(width: 6),
-        _Btn(
-          label: state.busy ? '…' : 'Check',
-          enabled: state.canCheck,
-          accent: true,
-          onTap: () => context.read<AppState>().recognize(),
         ),
         const SizedBox(width: 10),
         const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),

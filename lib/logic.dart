@@ -1187,6 +1187,23 @@ class ModelImportService {
             url: metadataUrl, destPath: metadataDest, headers: headers);
       }
 
+      // Step 5: optionally download prototypes.json and seed local DB
+      // prototypes.json format: [{"vocabulary":"字","prototype":[...],"count":N}, ...]
+      final prototypesPath = meta['prototypesUrl'] as String?;
+      final prototypesExists = meta['prototypesExists'] == true;
+      if (prototypesExists && prototypesPath != null) {
+        try {
+          final prototypesUrl = _buildAbsoluteUrl(baseUrl, prototypesPath);
+          final protoDest = p.join(modelsDir.path, 'prototypes.json');
+          await _downloadFile(
+              url: prototypesUrl, destPath: protoDest, headers: headers);
+          await _seedPrototypesToDb(protoDest);
+        } catch (e) {
+          debugPrint('[ModelImportService] prototypes seed skipped: $e');
+          // Non-fatal: encoder still works without seeded prototypes.
+        }
+      }
+
       // Derive version from metadata.json if available
       String version = 'unknown';
       if (metadataDest != null && File(metadataDest).existsSync()) {
@@ -1234,6 +1251,31 @@ class ModelImportService {
       }
       return ModelImportResult(
           status: ModelImportStatus.failed, errorMsg: e.toString());
+    }
+  }
+
+  /// Seed server-side prototypes into local char_prototypes table.
+  /// Only inserts rows that don't yet exist locally (does not overwrite
+  /// prototypes the user has built via Check, because those are more recent).
+  static Future<void> _seedPrototypesToDb(String jsonPath) async {
+    final raw = jsonDecode(File(jsonPath).readAsStringSync());
+    final List items = raw is List ? raw : (raw['prototypes'] as List);
+    for (final item in items) {
+      try {
+        final vocab = item['vocabulary'] as String;
+        final protoVec = item['prototype'] as List;
+        final count = (item['count'] as num?)?.toInt() ?? 1;
+        // Only upsert if no local prototype exists for this vocabulary,
+        // so we never overwrite user-trained prototypes with server data.
+        final existing = await DbService.getPrototype(vocab);
+        if (existing == null) {
+          await DbService.upsertPrototype(
+            vocabulary: vocab,
+            protoJson: jsonEncode(protoVec),
+            count: count,
+          );
+        }
+      } catch (_) {}
     }
   }
 
@@ -1942,6 +1984,84 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint('[saveSample] $e');
       return false;
+    }
+  }
+
+  // ── Save + Clear (pinned mode) ────────────────────────────────────────────
+  // Renders current strokes, encodes embedding, saves prototype + export
+  // sample, then clears the canvas. Returns false (and does NOT clear) if
+  // anything fails so the user never loses their drawing.
+
+  Future<bool> saveAndClearPinned() async {
+    if (_pinnedEntry == null) return false;
+    if (_canvas.strokes.isEmpty) return false;
+    if (_busy) return false;
+
+    _busy = true;
+    notifyListeners();
+
+    try {
+      final pngBytes = await CanvasRenderService.renderPngBytes(
+        _canvas.strokes,
+        strokeWidth: _strokeWidth,
+      );
+
+      // Encode embedding (model or fallback)
+      final tflEmb = await EmbeddingEncoder.encode(pngBytes);
+      final isFallback = tflEmb == null;
+      final embedding = tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+
+      // Save prototype/embedding — same flow as recognize()
+      final checkResult = await LocalLearningService.onCheck(
+        vocabulary: _pinnedEntry!.vocabulary,
+        ocrRaw: const [],
+        strokeWidth: _strokeWidth,
+        strokes: _canvas.strokes,
+        embedding: embedding,
+        isFallback: isFallback,
+      );
+
+      if (checkResult.isDbError) {
+        // Don't clear canvas on DB error
+        _busy = false;
+        notifyListeners();
+        return false;
+      }
+
+      // Save export sample (PNG for dataset)
+      final pngBase64 = base64Encode(pngBytes);
+      final strokeJson = StrokeSerializer.toJson(_canvas.strokes);
+      await DbService.saveExportSample(
+        vocabulary: _pinnedEntry!.vocabulary,
+        strokeJson: strokeJson,
+        strokeWidth: _strokeWidth,
+        pngBase64: pngBase64,
+      );
+
+      // Set feedback state
+      _similarityResult = checkResult.similarityResult;
+      _pendingToast = ToastMessage(
+        char: _pinnedEntry!.vocabulary,
+        embeddingCount: checkResult.embeddingCount,
+        status: checkResult.toastStatus,
+        protoUpdated: checkResult.protoUpdated,
+        matchedByProto: true,
+      );
+
+      // Clear canvas after successful save
+      _canvas = _canvas.clear();
+      _result = null;
+      _realtimeCandidates = const [];
+      _realtimeSource = 'none';
+
+      await _refreshPinnedSampleCount();
+      return true;
+    } catch (e) {
+      debugPrint('[saveAndClearPinned] $e');
+      return false;
+    } finally {
+      _busy = false;
+      notifyListeners();
     }
   }
 
