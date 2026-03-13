@@ -14,7 +14,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Flutter (stable)
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.22.0"
@@ -24,29 +24,34 @@ jobs:
       - name: Flutter doctor
         run: flutter doctor -v
 
-      - name: Install Flutter dependencies
+      - name: Create iOS folder if missing
+        run: |
+          if [ ! -d "ios" ]; then
+            flutter create --platforms=ios .
+          fi
+
+      - name: Flutter pub get
         run: flutter pub get
 
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons
 
-      - name: Create iOS platform folder if needed
-        run: |
-          if [ ! -d "ios" ]; then
-            echo "iOS folder not found — creating it..."
-            flutter create --platforms=ios .
-          else
-            echo "iOS folder already exists."
-          fi
+      - name: Precache iOS artifacts
+        run: flutter precache --ios
 
-      - name: Install CocoaPods dependencies
+      - name: Force iOS deployment target to 15.5
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 15.5" ios/Flutter/AppFrameworkInfo.plist || true
+          perl -0pi -e 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj || true
+
+      - name: Show Podfile
+        run: cat ios/Podfile
+
+      - name: Install CocoaPods
         working-directory: ios
-        run: pod install --repo-update
-
-      - name: Verify TFLite pod installed
         run: |
-          echo "=== Checking TFLite in Pods ==="
-          find ios/Pods -name "*TensorFlow*" -o -name "*tflite*" 2>/dev/null | head -20
+          pod repo update
+          pod install --repo-update
 
       - name: Flutter build iOS release (no codesign)
         run: flutter build ios --release --no-codesign
@@ -61,13 +66,13 @@ jobs:
           rm -rf Payload TocflWriter-unsigned.ipa
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/Runner.app
-          zip -r TocflWriter-unsigned.ipa Payload
-          echo "===== IPA STRUCTURE ====="
+          cd Payload && zip -r ../TocflWriter-unsigned.ipa Runner.app
+          cd ..
           unzip -l TocflWriter-unsigned.ipa | head -100
 
       - name: Validate IPA structure
         run: |
-          unzip -l TocflWriter-unsigned.ipa | grep "Payload/Runner.app/" || (echo "Invalid IPA structure" && exit 1)
+          unzip -l TocflWriter-unsigned.ipa | grep "Runner.app/" || (echo "Invalid IPA structure" && exit 1)
 
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4

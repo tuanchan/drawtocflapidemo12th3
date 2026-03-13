@@ -1,5 +1,6 @@
 // app.dart
 import 'dart:math';
+import 'package:characters/characters.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -165,7 +166,6 @@ class _CanvasPainter extends CustomPainter {
 
     c.drawRect(Offset.zero & sz, Paint()..color = kSurface);
 
-    // grid
     final g = Paint()
       ..color = kBorder
       ..strokeWidth = 0.5;
@@ -184,7 +184,6 @@ class _CanvasPainter extends CustomPainter {
         ..strokeWidth = 1,
     );
 
-    // watermark hint
     if (!canvas.hasStrokes && hint != null) {
       final tp = TextPainter(
         text: TextSpan(
@@ -203,7 +202,6 @@ class _CanvasPainter extends CustomPainter {
           c, Offset((sz.width - tp.width) / 2, (sz.height - tp.height) / 2));
     }
 
-    // strokes
     final ink = Paint()
       ..color = kAccent
       ..strokeWidth = strokeWidth * scale
@@ -220,12 +218,15 @@ class _CanvasPainter extends CustomPainter {
       }
       final path = Path()
         ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
-      for (final pt in s.points.skip(1))
+      for (final pt in s.points.skip(1)) {
         path.lineTo(pt.x * scale, pt.y * scale);
+      }
       c.drawPath(path, ink);
     }
 
-    for (final s in canvas.strokes) draw(s);
+    for (final s in canvas.strokes) {
+      draw(s);
+    }
     if (canvas.active != null) draw(canvas.active!);
   }
 
@@ -243,7 +244,6 @@ class _CanvasControls extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
       child: Column(children: [
-        // Slider độ dầy
         Row(children: [
           const Text('─', style: TextStyle(color: kTextMuted, fontSize: 10)),
           Expanded(
@@ -267,7 +267,6 @@ class _CanvasControls extends StatelessWidget {
           const Text('━', style: TextStyle(color: kTextMuted, fontSize: 14)),
         ]),
         const SizedBox(height: 4),
-        // Buttons
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           _Btn(
               label: 'undo',
@@ -328,7 +327,6 @@ class _SearchBarState extends State<_SearchBar> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Input row
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
           child: Row(children: [
@@ -371,7 +369,6 @@ class _SearchBarState extends State<_SearchBar> {
                 onChanged: (v) => context.read<AppState>().setSearchQuery(v),
               ),
             ),
-            // Reset pinned button
             if (state.pinnedEntry != null) ...[
               const SizedBox(width: 8),
               _Btn(
@@ -382,7 +379,6 @@ class _SearchBarState extends State<_SearchBar> {
             ],
           ]),
         ),
-        // Suggestions dropdown
         if (state.searchSuggestions.isNotEmpty)
           Container(
             constraints: const BoxConstraints(maxHeight: 180),
@@ -449,7 +445,6 @@ class _InfoArea extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
-    // If pinned entry → show its detail + stroke order button
     if (state.pinnedEntry != null) {
       return SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -462,7 +457,6 @@ class _InfoArea extends StatelessWidget {
       );
     }
 
-    // Otherwise show recognition result
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: _ResultArea(),
@@ -581,9 +575,7 @@ class _StrokeOrderBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Use only first character for stroke order lookup
     final c = char.isNotEmpty ? char.characters.first : char;
-    final codepoint = c.runes.first.toRadixString(16).padLeft(5, '0');
     final url =
         'https://stroke-order.learningweb.moe.edu.tw/charactersQueryResult.do?words=$c';
 

@@ -1,17 +1,15 @@
 // logic.dart
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:image/image.dart' as img;
+import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
+    as mlkit;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -19,10 +17,9 @@ const double kLogicalSize = 360.0;
 const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
 const String kDbFile = 'tocfl_vocab_clean.db';
 const String kTable = 'vocab_clean';
-const String kModelAsset = 'assets/ml/handwriting.tflite';
-const String kLabelsAsset = 'assets/ml/labels.json';
-const int kModelInputSize = 64;
-const int kTopK = 15;
+
+const String kMlKitLanguageCode = 'zh-Hant';
+const int kTopK = 10;
 
 // ── Stroke / Canvas ───────────────────────────────────────────────────────────
 
@@ -63,12 +60,24 @@ class CanvasData {
 
   CanvasData addPoint(double x, double y) {
     if (active == null) return this;
+
+    final nx = _c(x);
+    final ny = _c(y);
+    final pts = active!.points;
+
+    if (pts.isNotEmpty) {
+      final last = pts.last;
+      if ((last.x - nx).abs() < 0.35 && (last.y - ny).abs() < 0.35) {
+        return this;
+      }
+    }
+
     return CanvasData(
       strokes: strokes,
       redo: redo,
       active: StrokeData([
-        ...active!.points,
-        StrokePoint(_c(x), _c(y), _now()),
+        ...pts,
+        StrokePoint(nx, ny, _now()),
       ]),
     );
   }
@@ -116,14 +125,20 @@ class VocabEntry {
   });
 
   factory VocabEntry.fromMap(Map<String, dynamic> m) => VocabEntry(
-        vocabulary: m['vocabulary'] as String,
-        pinyin: m['pinyin'] as String?,
-        levelCode: m['level_code'] as String?,
-        context: m['context'] as String?,
-        partOfSpeech: m['part_of_speech'] as String?,
-        bopomofo: m['bopomofo'] as String?,
-        variantGroup: m['variant_group'] as String?,
+        vocabulary: (m['vocabulary'] ?? '') as String,
+        pinyin: _cleanNullable(m['pinyin']),
+        levelCode: _cleanNullable(m['level_code']),
+        context: _cleanNullable(m['context']),
+        partOfSpeech: _cleanNullable(m['part_of_speech']),
+        bopomofo: _cleanNullable(m['bopomofo']),
+        variantGroup: _cleanNullable(m['variant_group']),
       );
+
+  static String? _cleanNullable(dynamic v) {
+    final s = (v as String?)?.trim();
+    if (s == null || s.isEmpty) return null;
+    return s;
+  }
 }
 
 class RecResult {
@@ -168,172 +183,128 @@ class DbService {
 
   static Database get db => _db!;
 
-  static Future<List<VocabEntry>> findByChars(List<String> chars) async {
-    if (chars.isEmpty) return [];
-    final ph = chars.map((_) => '?').join(',');
+  static Future<List<VocabEntry>> search(String q) async {
+    final s = q.trim();
+    if (s.isEmpty) return [];
+
     final rows = await db.rawQuery(
-      'SELECT * FROM $kTable WHERE vocabulary IN ($ph) LIMIT 20',
-      chars,
+      '''
+      SELECT *
+      FROM $kTable
+      WHERE vocabulary LIKE ?
+         OR pinyin LIKE ?
+         OR bopomofo LIKE ?
+         OR variant_group LIKE ?
+      LIMIT 20
+      ''',
+      ['%$s%', '%$s%', '%$s%', '%$s%'],
     );
+
     return rows.map(VocabEntry.fromMap).toList();
   }
 
-  static Future<List<VocabEntry>> search(String q) async {
-    if (q.trim().isEmpty) return [];
+  static Future<List<VocabEntry>> findByVocabularyTokens(
+    List<String> tokens,
+  ) async {
+    final clean =
+        tokens.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
+
+    if (clean.isEmpty) return [];
+
+    final placeholders = List.filled(clean.length, '?').join(',');
     final rows = await db.rawQuery(
-      'SELECT * FROM $kTable WHERE vocabulary LIKE ? OR pinyin LIKE ? LIMIT 20',
-      ['%$q%', '%$q%'],
+      '''
+      SELECT *
+      FROM $kTable
+      WHERE vocabulary IN ($placeholders)
+      LIMIT 50
+      ''',
+      clean,
     );
+
     return rows.map(VocabEntry.fromMap).toList();
   }
 }
 
-// ── TFLite Recognizer ─────────────────────────────────────────────────────────
+// ── ML Kit Digital Ink Service ───────────────────────────────────────────────
 
-class HwrService {
-  static Interpreter? _interp;
-  static List<String> _labels = [];
-  static bool _ready = false;
+class DigitalInkService {
+  static final mlkit.DigitalInkRecognizerModelManager _modelManager =
+      mlkit.DigitalInkRecognizerModelManager();
 
-  static Future<void> init() async {
-    if (_ready) return;
+  static mlkit.DigitalInkRecognizer? _recognizer;
+  static bool _prepared = false;
+  static Future<void>? _downloading;
 
-    final raw = await rootBundle.loadString(kLabelsAsset);
-    _labels = List<String>.from(jsonDecode(raw) as List);
-    debugPrint('[HwrService] ${_labels.length} classes loaded');
+  static Future<void> prepare() async {
+    if (_prepared) return;
+    _recognizer = mlkit.DigitalInkRecognizer(
+      languageCode: kMlKitLanguageCode,
+    );
+    _prepared = true;
+  }
+
+  static Future<void> ensureModelDownloaded() async {
+    await prepare();
+
+    final downloaded =
+        await _modelManager.isModelDownloaded(kMlKitLanguageCode);
+    if (downloaded) return;
+
+    _downloading ??= () async {
+      final ok = await _modelManager.downloadModel(kMlKitLanguageCode);
+      if (!ok) {
+        throw Exception(
+          'Không tải được model ML Kit ($kMlKitLanguageCode). Bật mạng rồi thử lại.',
+        );
+      }
+    }();
 
     try {
-      final buffer = await rootBundle.load(kModelAsset);
-      final bytes = buffer.buffer.asUint8List(
-        buffer.offsetInBytes,
-        buffer.lengthInBytes,
-      );
-
-      debugPrint('[HwrService] model bytes: ${bytes.length}');
-      _interp = Interpreter.fromBuffer(bytes);
-
-      final inShape = _interp!.getInputTensor(0).shape;
-      final outShape = _interp!.getOutputTensor(0).shape;
-      debugPrint('[HwrService] input:$inShape output:$outShape');
-
-      _ready = true;
-    } catch (e, st) {
-      debugPrint('[HwrService] init failed: $e');
-      debugPrint(st.toString());
-      rethrow;
+      await _downloading;
+    } finally {
+      _downloading = null;
     }
   }
 
-  static Future<List<String>> recognize(
+  static Future<List<mlkit.RecognitionCandidate>> recognize(
     List<StrokeData> strokes, {
-    int topK = kTopK,
-    double strokeWidth = 10.0,
+    String preContext = '',
   }) async {
-    if (!_ready) {
-      await init();
-    }
-
     if (strokes.isEmpty) return [];
 
-    final input = await _prepareInput(strokes, strokeWidth: strokeWidth);
-    final output = [List<double>.filled(_labels.length, 0.0)];
+    await prepare();
+    await ensureModelDownloaded();
 
-    _interp!.run(input, output);
+    final ink = mlkit.Ink();
+    ink.strokes = strokes.map(_toMlStroke).toList();
 
-    final scores = output[0];
-    final indexed = List.generate(scores.length, (i) => MapEntry(i, scores[i]));
-    indexed.sort((a, b) => b.value.compareTo(a.value));
-
-    final result = indexed
-        .take(topK)
-        .map((e) => _labels[e.key])
-        .where((ch) => ch.isNotEmpty && ch != '?')
-        .toList();
-
-    debugPrint('[HwrService] top5: ${result.take(5).join(" ")}');
-    return result;
-  }
-
-  static Future<List> _prepareInput(
-    List<StrokeData> strokes, {
-    double strokeWidth = 10.0,
-  }) async {
-    const int renderSz = 256;
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    final scale = renderSz / kLogicalSize;
-
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, renderSz.toDouble(), renderSz.toDouble()),
-      Paint()..color = Colors.white,
-    );
-
-    final ink = Paint()
-      ..color = Colors.black
-      ..strokeWidth = strokeWidth * scale
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..style = PaintingStyle.stroke;
-
-    for (final s in strokes) {
-      if (s.points.isEmpty) continue;
-
-      if (s.points.length == 1) {
-        canvas.drawCircle(
-          Offset(s.points.first.x * scale, s.points.first.y * scale),
-          7 * scale,
-          ink,
-        );
-        continue;
-      }
-
-      final path = Path()
-        ..moveTo(s.points.first.x * scale, s.points.first.y * scale);
-
-      for (final pt in s.points.skip(1)) {
-        path.lineTo(pt.x * scale, pt.y * scale);
-      }
-
-      canvas.drawPath(path, ink);
-    }
-
-    final picture = recorder.endRecording();
-    final uiImage = await picture.toImage(renderSz, renderSz);
-    final byteData =
-        await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
-    final rgba = byteData!.buffer.asUint8List();
-
-    final srcImg = img.Image.fromBytes(
-      width: renderSz,
-      height: renderSz,
-      bytes: rgba.buffer,
-      format: img.Format.uint8,
-      numChannels: 4,
-    );
-
-    final resized = img.copyResize(
-      img.grayscale(srcImg),
-      width: kModelInputSize,
-      height: kModelInputSize,
-      interpolation: img.Interpolation.average,
-    );
-
-    return List.generate(
-      1,
-      (_) => List.generate(
-        kModelInputSize,
-        (y) => List.generate(
-          kModelInputSize,
-          (x) => [resized.getPixel(x, y).r / 255.0],
-        ),
+    final context = mlkit.DigitalInkRecognitionContext(
+      preContext: preContext,
+      writingArea: mlkit.WritingArea(
+        width: kLogicalSize,
+        height: kLogicalSize,
       ),
     );
+
+    return _recognizer!.recognize(
+      ink,
+      context: context,
+    );
+  }
+
+  static mlkit.Stroke _toMlStroke(StrokeData stroke) {
+    final s = mlkit.Stroke();
+    s.points = stroke.points
+        .map((p) => mlkit.StrokePoint(x: p.x, y: p.y, t: p.t))
+        .toList();
+    return s;
   }
 
   static void close() {
-    _interp?.close();
-    _interp = null;
-    _ready = false;
+    _recognizer?.close();
+    _recognizer = null;
+    _prepared = false;
   }
 }
 
@@ -363,23 +334,22 @@ class AppState extends ChangeNotifier {
   List<VocabEntry> get searchSuggestions => _searchSuggestions;
   VocabEntry? get pinnedEntry => _pinnedEntry;
 
-  void setStrokeWidth(double v) {
-    _strokeWidth = v.clamp(4.0, 24.0);
-    notifyListeners();
-  }
-
   Future<void> init() async {
     try {
       await DbService.init();
+      await DigitalInkService.prepare();
     } catch (e, st) {
-      debugPrint('[AppState] init error: $e\n$st');
+      debugPrint('[AppState.init] $e');
+      debugPrint(st.toString());
       _initError = e.toString();
+    } finally {
       _ready = true;
       notifyListeners();
-      return;
     }
+  }
 
-    _ready = true;
+  void setStrokeWidth(double v) {
+    _strokeWidth = v.clamp(4.0, 24.0);
     notifyListeners();
   }
 
@@ -420,9 +390,12 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    _searchDebounce = Timer(const Duration(milliseconds: 250), () async {
-      final results = await DbService.search(q);
-      _searchSuggestions = results;
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () async {
+      try {
+        _searchSuggestions = await DbService.search(q);
+      } catch (_) {
+        _searchSuggestions = [];
+      }
       notifyListeners();
     });
   }
@@ -447,24 +420,27 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await HwrService.init();
-
-      final topChars = await HwrService.recognize(
+      final candidates = await DigitalInkService.recognize(
         _canvas.strokes,
-        strokeWidth: _strokeWidth,
+        preContext: _pinnedEntry?.vocabulary ?? '',
       );
 
-      final lookup = <String>{};
-      for (final ch in topChars) {
-        lookup.add(ch);
-        for (int i = 0; i < ch.length; i++) {
-          final c = ch[i];
-          if (c.trim().isNotEmpty) lookup.add(c);
-        }
+      final raw = candidates
+          .map((e) => e.text.trim())
+          .where((e) => e.isNotEmpty)
+          .take(kTopK)
+          .toList();
+
+      if (raw.isEmpty) {
+        _result = const RecResult(raw: []);
+        return;
       }
 
-      final matches = await DbService.findByChars(lookup.toList());
-      _result = RecResult(matches: matches, raw: topChars);
+      final tokens = _buildLookupTokens(raw);
+      var matches = await DbService.findByVocabularyTokens(tokens);
+      matches = _sortMatchesByCandidateOrder(matches, raw);
+
+      _result = RecResult(matches: matches, raw: raw);
     } catch (e, st) {
       debugPrint('[recognize] $e');
       debugPrint(st.toString());
@@ -475,10 +451,64 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  List<String> _buildLookupTokens(List<String> raw) {
+    final set = <String>{};
+
+    for (final item in raw) {
+      final s = item.trim();
+      if (s.isEmpty) continue;
+
+      set.add(s);
+
+      for (final rune in s.runes) {
+        final ch = String.fromCharCode(rune).trim();
+        if (ch.isNotEmpty) set.add(ch);
+      }
+    }
+
+    return set.toList();
+  }
+
+  List<VocabEntry> _sortMatchesByCandidateOrder(
+    List<VocabEntry> entries,
+    List<String> raw,
+  ) {
+    final exactOrder = <String, int>{};
+    for (var i = 0; i < raw.length; i++) {
+      exactOrder.putIfAbsent(raw[i], () => i);
+    }
+
+    int score(VocabEntry e) {
+      if (exactOrder.containsKey(e.vocabulary)) {
+        return exactOrder[e.vocabulary]!;
+      }
+
+      var best = 9999;
+      for (final rune in e.vocabulary.runes) {
+        final ch = String.fromCharCode(rune);
+        final idx = raw.indexOf(ch);
+        if (idx >= 0 && idx < best) best = idx + 100;
+      }
+      return best;
+    }
+
+    final list = [...entries];
+    list.sort((a, b) {
+      final sa = score(a);
+      final sb = score(b);
+      if (sa != sb) return sa.compareTo(sb);
+      if (a.vocabulary.length != b.vocabulary.length) {
+        return a.vocabulary.length.compareTo(b.vocabulary.length);
+      }
+      return a.vocabulary.compareTo(b.vocabulary);
+    });
+    return list;
+  }
+
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    HwrService.close();
+    DigitalInkService.close();
     super.dispose();
   }
 }
