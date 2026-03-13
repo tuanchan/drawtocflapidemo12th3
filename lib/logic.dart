@@ -1190,8 +1190,8 @@ class ModelImportService {
       // Step 5: optionally download prototypes.json and seed local DB
       // prototypes.json format: [{"vocabulary":"字","prototype":[...],"count":N}, ...]
       final prototypesPath = meta['prototypesUrl'] as String?;
-      final prototypesExists = meta['prototypesExists'] == true;
-      if (prototypesExists && prototypesPath != null) {
+
+      if (prototypesPath != null && prototypesPath.trim().isNotEmpty) {
         try {
           final prototypesUrl = _buildAbsoluteUrl(baseUrl, prototypesPath);
           final protoDest = p.join(modelsDir.path, 'prototypes.json');
