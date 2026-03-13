@@ -1036,7 +1036,7 @@ class EmbeddingEncoder {
           final g = rgba[i * 4 + 1];
           final b = rgba[i * 4 + 2];
           final gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
-          return 1.0 - gray; // invert: ink → 1, background → 0
+          return gray; // giữ đúng như train.py: nền trắng=1, nét đen=0
         },
       );
 
