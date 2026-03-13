@@ -906,22 +906,6 @@ class _SampleBar extends StatelessWidget {
             isWarning: state.pendingUploadCount > 50,
           ),
         const Spacer(),
-        _Btn(
-          label: '+ sample',
-          enabled: state.canvas.hasStrokes && !state.busy,
-          onTap: () async {
-            final ok = await context.read<AppState>().saveSample();
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(ok ? 'Sample saved' : 'Save failed',
-                  style:
-                      TextStyle(color: ok ? kSuccess : kError, fontSize: 11)),
-              backgroundColor: kSurface,
-              duration: const Duration(milliseconds: 1400),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ));
-          },
-        ),
       ]),
     );
   }
@@ -1366,11 +1350,12 @@ class _ResultArea extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     if (state.busy)
-      return const Text('Checking…',
+      return const Text('Saving…',
           style: TextStyle(color: kTextSecondary, fontSize: 12));
+
     final r = state.result;
     if (r == null)
-      return const Text('Draw then press Check',
+      return const Text('Pin chữ rồi vẽ để realtime compare',
           style: TextStyle(color: kTextMuted, fontSize: 12, letterSpacing: 1));
     if (r.error != null)
       return Text(r.error!,

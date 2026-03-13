@@ -1259,23 +1259,49 @@ class ModelImportService {
   /// prototypes the user has built via Check, because those are more recent).
   static Future<void> _seedPrototypesToDb(String jsonPath) async {
     final raw = jsonDecode(File(jsonPath).readAsStringSync());
-    final List items = raw is List ? raw : (raw['prototypes'] as List);
-    for (final item in items) {
-      try {
-        final vocab = item['vocabulary'] as String;
-        final protoVec = item['prototype'] as List;
-        final count = (item['count'] as num?)?.toInt() ?? 1;
-        // Only upsert if no local prototype exists for this vocabulary,
-        // so we never overwrite user-trained prototypes with server data.
-        final existing = await DbService.getPrototype(vocab);
-        if (existing == null) {
-          await DbService.upsertPrototype(
-            vocabulary: vocab,
-            protoJson: jsonEncode(protoVec),
-            count: count,
-          );
-        }
-      } catch (_) {}
+
+    if (raw is Map<String, dynamic>) {
+      for (final entry in raw.entries) {
+        try {
+          final vocab = entry.key;
+          final data = entry.value as Map<String, dynamic>;
+          final protoVec = (data['prototype'] as List)
+              .map((e) => (e as num).toDouble())
+              .toList();
+          final count = (data['count'] as num?)?.toInt() ?? 1;
+
+          final existing = await DbService.getPrototype(vocab);
+          if (existing == null) {
+            await DbService.upsertPrototype(
+              vocabulary: vocab,
+              protoJson: jsonEncode(protoVec),
+              count: count,
+            );
+          }
+        } catch (_) {}
+      }
+      return;
+    }
+
+    if (raw is List) {
+      for (final item in raw) {
+        try {
+          final vocab = item['vocabulary'] as String;
+          final protoVec = (item['prototype'] as List)
+              .map((e) => (e as num).toDouble())
+              .toList();
+          final count = (item['count'] as num?)?.toInt() ?? 1;
+
+          final existing = await DbService.getPrototype(vocab);
+          if (existing == null) {
+            await DbService.upsertPrototype(
+              vocabulary: vocab,
+              protoJson: jsonEncode(protoVec),
+              count: count,
+            );
+          }
+        } catch (_) {}
+      }
     }
   }
 
