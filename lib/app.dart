@@ -920,7 +920,7 @@ class _EmbeddingCountBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<int>(
-      future: DbService.getSampleCount(vocabulary),
+      future: DbService.getEmbeddingCount(vocabulary),
       builder: (ctx, snap) {
         final count = snap.data ?? 0;
         return Padding(
