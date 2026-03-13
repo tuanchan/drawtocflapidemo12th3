@@ -2134,7 +2134,7 @@ class AppState extends ChangeNotifier {
                     .map((e) => (e as num).toDouble())
                     .toList();
             final count = (row['count'] as int?) ?? 0;
-            final score = PrototypeService.cosine(embedding, protoVec);
+            final score = PrototypeService.cosine01(embedding, protoVec);
             candidates.add(ProtoMatchCandidate(
                 vocabulary: vocab, score: score, count: count));
           } catch (_) {}
@@ -2197,8 +2197,8 @@ class AppState extends ChangeNotifier {
                 (jsonDecode(row['prototype_json'] as String) as List)
                     .map((e) => (e as num).toDouble())
                     .toList();
-            scored.add(
-                MapEntry(vocab, PrototypeService.cosine(embedding, protoVec)));
+            scored.add(MapEntry(
+                vocab, PrototypeService.cosine01(embedding, protoVec)));
           } catch (_) {}
         }
         scored.sort((a, b) => b.value.compareTo(a.value));
