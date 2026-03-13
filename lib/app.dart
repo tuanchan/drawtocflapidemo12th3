@@ -137,36 +137,32 @@ class _MainScreenState extends State<_MainScreen> {
               child: GestureDetector(
                 onTap: _openSettings,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
                     color: kBg,
                     border: Border.all(color: kBorder),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                  child: Stack(
+                    clipBehavior: Clip.none,
                     children: [
-                      const Text('Settings',
-                          style: TextStyle(
-                              color: kTextMuted,
-                              fontSize: 10,
-                              letterSpacing: 0.8)),
-                      if (state.pendingUploadCount > 0) ...[
-                        const SizedBox(width: 5),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 4, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: kAccentDim,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                          child: Text(
-                            '${state.pendingUploadCount}',
-                            style: const TextStyle(color: kAccent, fontSize: 8),
+                      const Icon(Icons.settings, color: kTextMuted, size: 16),
+                      if (state.pendingUploadCount > 0)
+                        Positioned(
+                          right: -5,
+                          top: -5,
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: const BoxDecoration(
+                              color: kAccent,
+                              shape: BoxShape.circle,
+                            ),
+                            child: Text(
+                              '${state.pendingUploadCount}',
+                              style: const TextStyle(color: kBg, fontSize: 7),
+                            ),
                           ),
                         ),
-                      ],
                     ],
                   ),
                 ),
@@ -715,11 +711,11 @@ class _Body extends StatelessWidget {
       return Column(children: [
         const _TopPanel(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const Expanded(child: _DrawCanvas()),
+        const Expanded(flex: 7, child: _DrawCanvas()),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
         const _BottomBar(),
         const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        Expanded(flex: 3, child: _InfoArea()),
+        Expanded(flex: 2, child: _InfoArea()),
       ]);
     });
   }
@@ -767,33 +763,49 @@ class _RealtimePredictionPanel extends StatelessWidget {
 
     if (!hasStrokes && candidates.isEmpty) return const SizedBox.shrink();
 
+    String emptyMsg = 'No local prototypes';
+    if (state.realtimeSource == 'labels_fallback') {
+      emptyMsg = 'Model loaded · draw to match';
+    }
+
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 38),
+      constraints: const BoxConstraints(minHeight: 32),
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: kBorder, width: 1)),
       ),
-      padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       child: candidates.isEmpty
-          ? const Text('No local prototypes',
-              style:
-                  TextStyle(color: kTextMuted, fontSize: 9, letterSpacing: 0.8))
+          ? Text(emptyMsg,
+              style: const TextStyle(
+                  color: kTextMuted, fontSize: 9, letterSpacing: 0.8))
           : Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 _BestMatchGlyph(candidate: candidates.first),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: candidates.skip(1).map((c) {
-                      final isSimilar =
-                          (candidates.first.score - c.score) <= 0.08;
-                      return _CandidateChip(candidate: c, isSimilar: isSimilar);
-                    }).toList(),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: candidates.skip(1).map((c) {
+                        final isSimilar =
+                            (candidates.first.score - c.score) <= 0.08;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: _CandidateChip(
+                              candidate: c, isSimilar: isSimilar),
+                        );
+                      }).toList(),
+                    ),
                   ),
                 ),
+                if (state.realtimeSource == 'labels_fallback')
+                  const Padding(
+                    padding: EdgeInsets.only(left: 4),
+                    child: Text('~',
+                        style: TextStyle(color: kTextMuted, fontSize: 8)),
+                  ),
               ],
             ),
     );
