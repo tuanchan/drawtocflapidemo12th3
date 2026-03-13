@@ -45,7 +45,6 @@ class _MainScreenState extends State<_MainScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().init();
-      // Listen for toast signals after the first frame.
       context.read<AppState>().addListener(_onStateChange);
     });
   }
@@ -83,6 +82,22 @@ class _MainScreenState extends State<_MainScreen> {
     Overlay.of(context).insert(entry);
   }
 
+  void _openSettings() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+        side: BorderSide(color: kBorder),
+      ),
+      builder: (_) => ChangeNotifierProvider.value(
+        value: context.read<AppState>(),
+        child: const _SettingsSheet(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -112,9 +127,526 @@ class _MainScreenState extends State<_MainScreen> {
         ),
       );
     }
-    return const Scaffold(
+    return Scaffold(
       backgroundColor: kBg,
-      body: SafeArea(child: _Body()),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            const _Body(),
+            // Settings button — top-right corner
+            Positioned(
+              top: 8,
+              right: 12,
+              child: GestureDetector(
+                onTap: _openSettings,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: kBg,
+                    border: Border.all(color: kBorder),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('set',
+                          style: TextStyle(
+                              color: kTextMuted,
+                              fontSize: 10,
+                              letterSpacing: 0.8)),
+                      if (state.pendingUploadCount > 0) ...[
+                        const SizedBox(width: 5),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: kAccentDim,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                          child: Text(
+                            '${state.pendingUploadCount}',
+                            style: const TextStyle(color: kAccent, fontSize: 8),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Settings Sheet ────────────────────────────────────────────────────────────
+
+class _SettingsSheet extends StatefulWidget {
+  const _SettingsSheet();
+  @override
+  State<_SettingsSheet> createState() => _SettingsSheetState();
+}
+
+class _SettingsSheetState extends State<_SettingsSheet> {
+  late TextEditingController _serverUrlCtrl;
+  late TextEditingController _apiKeyCtrl;
+  late TextEditingController _batchNameCtrl;
+  late TextEditingController _modelImportUrlCtrl;
+  late bool _autoDelete;
+
+  String? _statusMsg;
+  bool _isOk = false;
+  bool _loading = false;
+
+  ExportStatus _exportStatus = ExportStatus.idle;
+  int _exportedCount = 0;
+  String? _exportBatchId;
+
+  ModelImportStatus _importStatus = ModelImportStatus.idle;
+  String? _importedVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<AppState>().settings;
+    _serverUrlCtrl = TextEditingController(text: s.serverUrl);
+    _apiKeyCtrl = TextEditingController(text: s.apiKey);
+    _batchNameCtrl = TextEditingController(text: s.batchName);
+    _modelImportUrlCtrl = TextEditingController(
+        text: s.modelImportUrl.isNotEmpty ? s.modelImportUrl : s.serverUrl);
+    _autoDelete = s.autoDeleteAfterUpload;
+  }
+
+  @override
+  void dispose() {
+    _serverUrlCtrl.dispose();
+    _apiKeyCtrl.dispose();
+    _batchNameCtrl.dispose();
+    _modelImportUrlCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final appState = context.read<AppState>();
+    final updated = appState.settings.copyWith(
+      serverUrl: _serverUrlCtrl.text.trim(),
+      apiKey: _apiKeyCtrl.text.trim(),
+      batchName: _batchNameCtrl.text.trim(),
+      modelImportUrl: _modelImportUrlCtrl.text.trim(),
+      autoDeleteAfterUpload: _autoDelete,
+    );
+    await appState.updateSettings(updated);
+  }
+
+  Future<void> _testConnection() async {
+    await _save();
+    setState(() {
+      _loading = true;
+      _statusMsg = null;
+    });
+    final ok = await DatasetExportService.testConnection(
+      _serverUrlCtrl.text.trim(),
+      _apiKeyCtrl.text.trim(),
+    );
+    setState(() {
+      _loading = false;
+      _isOk = ok;
+      _statusMsg = ok ? 'connected' : 'connection failed';
+    });
+  }
+
+  Future<void> _exportDataset() async {
+    await _save();
+    setState(() {
+      _exportStatus = ExportStatus.exporting;
+      _statusMsg = null;
+    });
+    final result = await DatasetExportService.exportDataset(
+      settings: context.read<AppState>().settings,
+    );
+    setState(() {
+      _exportStatus = result.status;
+      _exportedCount = result.uploadedCount;
+      _exportBatchId = result.batchId;
+      _statusMsg = result.status == ExportStatus.success
+          ? 'uploaded ${result.uploadedCount} samples · ${result.batchId}'
+          : 'export failed: ${result.errorMsg}';
+      _isOk = result.status == ExportStatus.success;
+    });
+    // Refresh pending count
+    // ignore: use_build_context_synchronously
+    if (mounted) context.read<AppState>().init();
+  }
+
+  Future<void> _importEncoder() async {
+    await _save();
+    setState(() {
+      _importStatus = ModelImportStatus.loading;
+      _statusMsg = null;
+    });
+    final s = context.read<AppState>().settings;
+    final importUrl = _modelImportUrlCtrl.text.trim().isNotEmpty
+        ? _modelImportUrlCtrl.text.trim()
+        : _serverUrlCtrl.text.trim();
+    final result = await ModelImportService.importEncoder(
+      importUrl: importUrl,
+      apiKey: s.apiKey,
+      currentSettings: s,
+    );
+    setState(() {
+      _importStatus = result.status;
+      _importedVersion = result.version;
+      _statusMsg = result.status == ModelImportStatus.success
+          ? 'encoder imported · ${result.version ?? 'unknown'} · ready'
+          : 'import failed: ${result.errorMsg}';
+      _isOk = result.status == ModelImportStatus.success;
+    });
+    if (mounted && result.status == ModelImportStatus.success) {
+      context.read<AppState>().updateSettings(
+            context.read<AppState>().settings.copyWith(
+                  lastImportedModelVersion: result.version,
+                  lastImportedAt: DateTime.now(),
+                ),
+          );
+    }
+  }
+
+  Future<void> _clearLocalSamples() async {
+    await DbService.deleteAllLocalExportSamples();
+    if (mounted) {
+      setState(() {
+        _statusMsg = 'local samples cleared';
+        _isOk = true;
+      });
+      context.read<AppState>().init();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final s = appState.settings;
+    final modelHasLocal = EmbeddingEncoder.hasImportedModel();
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(children: [
+              const Text('settings',
+                  style: TextStyle(
+                      color: kTextSecondary, fontSize: 11, letterSpacing: 1.2)),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: const Text('close',
+                    style: TextStyle(
+                        color: kTextMuted, fontSize: 10, letterSpacing: 0.8)),
+              ),
+            ]),
+            const SizedBox(height: 16),
+
+            // Server URL
+            _SettingsField(
+              label: 'server url',
+              controller: _serverUrlCtrl,
+              hint: 'http://localhost:8000',
+            ),
+            const SizedBox(height: 10),
+
+            // API key
+            _SettingsField(
+              label: 'api key',
+              controller: _apiKeyCtrl,
+              hint: 'optional',
+              obscure: true,
+            ),
+            const SizedBox(height: 10),
+
+            // Batch name
+            _SettingsField(
+              label: 'batch name',
+              controller: _batchNameCtrl,
+              hint: 'batch_001',
+            ),
+            const SizedBox(height: 10),
+
+            // Model import URL
+            _SettingsField(
+              label: 'model import url',
+              controller: _modelImportUrlCtrl,
+              hint: 'defaults to server url/import',
+            ),
+            const SizedBox(height: 12),
+
+            // Auto-delete toggle
+            Row(children: [
+              const Text('auto delete after upload',
+                  style: TextStyle(
+                      color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => setState(() => _autoDelete = !_autoDelete),
+                child: Container(
+                  width: 36,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: _autoDelete ? kAccentDim : kBorder,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: AnimatedAlign(
+                    duration: const Duration(milliseconds: 150),
+                    alignment: _autoDelete
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: _autoDelete ? kAccent : kTextMuted,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 16),
+
+            // Info chips
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                _InfoChip(
+                    label: 'pending', value: '${appState.pendingUploadCount}'),
+                if (s.lastUploadBatchId != null)
+                  _InfoChip(
+                      label: 'last batch',
+                      value: s.lastUploadBatchId!
+                          .substring(0, min(18, s.lastUploadBatchId!.length))),
+                if (s.lastImportedModelVersion != null)
+                  _InfoChip(
+                      label: 'model',
+                      value: s.lastImportedModelVersion!,
+                      ok: modelHasLocal),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // Action buttons row 1
+            Row(children: [
+              Expanded(
+                child: _SheetBtn(
+                  label: _loading ? '…' : 'test connection',
+                  enabled: !_loading,
+                  onTap: _testConnection,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SheetBtn(
+                  label: _exportStatus == ExportStatus.exporting
+                      ? 'exporting…'
+                      : 'export dataset',
+                  enabled: _exportStatus != ExportStatus.exporting,
+                  accent: true,
+                  onTap: _exportDataset,
+                ),
+              ),
+            ]),
+            const SizedBox(height: 8),
+
+            // Action buttons row 2
+            Row(children: [
+              Expanded(
+                child: _SheetBtn(
+                  label: _importStatus == ModelImportStatus.loading
+                      ? 'importing…'
+                      : 'import encoder',
+                  enabled: _importStatus != ModelImportStatus.loading,
+                  onTap: _importEncoder,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SheetBtn(
+                  label: 'clear local samples',
+                  enabled: true,
+                  onTap: _clearLocalSamples,
+                ),
+              ),
+            ]),
+            const SizedBox(height: 12),
+
+            // Status message
+            if (_statusMsg != null)
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                      color: _isOk
+                          ? kSuccess.withOpacity(0.4)
+                          : kError.withOpacity(0.4)),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _statusMsg!,
+                  style: TextStyle(
+                    color: _isOk ? kSuccess : kError,
+                    fontSize: 10,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final String? hint;
+  final bool obscure;
+
+  const _SettingsField({
+    required this.label,
+    required this.controller,
+    this.hint,
+    this.obscure = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          style: const TextStyle(color: kTextPrimary, fontSize: 12),
+          cursorColor: kAccent,
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: kTextMuted, fontSize: 11),
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            filled: true,
+            fillColor: kBg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: kBorder),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: kBorder),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: kAccent, width: 1),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool? ok;
+
+  const _InfoChip({required this.label, required this.value, this.ok});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ok == null
+        ? kTextMuted
+        : ok!
+            ? kSuccess
+            : kError;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: RichText(
+        text: TextSpan(children: [
+          TextSpan(
+              text: '$label ',
+              style: const TextStyle(
+                  color: kTextMuted, fontSize: 9, letterSpacing: 0.4)),
+          TextSpan(
+              text: value,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.3)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _SheetBtn extends StatelessWidget {
+  final String label;
+  final bool enabled;
+  final bool accent;
+  final VoidCallback onTap;
+
+  const _SheetBtn({
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+    this.accent = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = enabled ? (accent ? kBg : kTextSecondary) : kTextMuted;
+    final bg = accent && enabled ? kAccent : Colors.transparent;
+    final border =
+        enabled ? (accent ? kAccent : kBorder) : kBorder.withOpacity(0.4);
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        decoration: BoxDecoration(
+          color: bg,
+          border: Border.all(color: border),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: fg, fontSize: 10, letterSpacing: 0.8),
+        ),
+      ),
     );
   }
 }
@@ -153,7 +685,6 @@ class _EmbeddingToastState extends State<_EmbeddingToast>
 
     _ctrl.forward();
 
-    // Auto-dismiss after 2.4 s
     Future.delayed(const Duration(milliseconds: 2400), () {
       if (mounted) {
         _ctrl.reverse().then((_) => widget.onDone());
@@ -188,7 +719,6 @@ class _EmbeddingToastState extends State<_EmbeddingToast>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Character glyph + count below
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -291,7 +821,65 @@ class _CanvasArea extends StatelessWidget {
   Widget build(BuildContext context) => const Column(children: [
         Expanded(child: _DrawCanvas()),
         _LearningFeedback(),
+        _DatasetStatusBar(),
       ]);
+}
+
+// ── Dataset status bar (shown when pinned) ────────────────────────────────────
+
+class _DatasetStatusBar extends StatelessWidget {
+  const _DatasetStatusBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    if (state.pinnedEntry == null) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: Row(
+        children: [
+          // Local sample count for this char
+          _StatChip(
+            label: '樣本',
+            value: '${state.localSampleCountForPinned}',
+            highlight: state.localSampleCountForPinned > 0,
+          ),
+          const SizedBox(width: 6),
+          // Pending upload count
+          if (state.pendingUploadCount > 0)
+            _StatChip(
+              label: 'pending',
+              value: '${state.pendingUploadCount}',
+              isWarning: state.pendingUploadCount > 50,
+            ),
+          const Spacer(),
+          // Save Sample button
+          _Btn(
+            label: '＋ sample',
+            enabled: state.canvas.hasStrokes && !state.busy,
+            onTap: () async {
+              final ok = await context.read<AppState>().saveSample();
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok ? 'sample saved' : 'save failed',
+                    style:
+                        TextStyle(color: ok ? kSuccess : kError, fontSize: 11),
+                  ),
+                  backgroundColor: kSurface,
+                  duration: const Duration(milliseconds: 1400),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ── Draw canvas ───────────────────────────────────────────────────────────────
@@ -506,7 +1094,7 @@ class _LearningFeedback extends StatelessWidget {
         final accuracy = stats['ocr_accuracy'] as double;
 
         return Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
           child: Row(children: [
             _StatChip(
               label: '嵌入',
@@ -657,7 +1245,8 @@ class _SearchBarState extends State<_SearchBar> {
       mainAxisSize: MainAxisSize.min,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+          // Reserve right space for the settings button overlay
+          padding: const EdgeInsets.fromLTRB(12, 8, 80, 6),
           child: Row(children: [
             Expanded(
               child: TextField(

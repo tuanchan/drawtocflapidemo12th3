@@ -9,9 +9,13 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:archive/archive_io.dart';
+import 'package:uuid/uuid.dart';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -22,10 +26,32 @@ const String kTable = 'vocab_clean';
 const String kTableSamples = 'handwriting_samples';
 const String kTableEmbeddings = 'char_embeddings';
 const String kTablePrototypes = 'char_prototypes';
+const String kTableExportSamples = 'export_samples';
 const int kTopK = 10;
-const int kDbVersion = 3;
+const int kDbVersion = 4;
 
 const MethodChannel _visionChannel = MethodChannel('tocfl_writer/vision_ocr');
+
+// ── URL helpers ───────────────────────────────────────────────────────────────
+
+/// Strip trailing slashes from a base URL.
+String _normalizeBase(String url) {
+  var s = url.trim();
+  while (s.endsWith('/')) s = s.substring(0, s.length - 1);
+  return s;
+}
+
+/// Join base URL + possibly-relative path, no double slashes.
+String _buildAbsoluteUrl(String baseUrl, String path) {
+  final base = _normalizeBase(baseUrl);
+  final rel = path.startsWith('/') ? path : '/$path';
+  return '$base$rel';
+}
+
+/// Auth headers: x-api-key only (not Authorization Bearer).
+Map<String, String> _authHeaders(String apiKey) => {
+      if (apiKey.isNotEmpty) 'x-api-key': apiKey,
+    };
 
 // ── Platform helper ───────────────────────────────────────────────────────────
 
@@ -381,6 +407,190 @@ class CheckResult {
   }
 }
 
+// ── App Settings Model ────────────────────────────────────────────────────────
+
+class AppSettings {
+  final String serverUrl;
+  final String apiKey;
+  final String batchName;
+  final String modelImportUrl;
+  final bool autoDeleteAfterUpload;
+  final String? lastUploadBatchId;
+  final String? lastImportedModelVersion;
+  final DateTime? lastImportedAt;
+
+  const AppSettings({
+    this.serverUrl = '',
+    this.apiKey = '',
+    this.batchName = 'batch_001',
+    this.modelImportUrl = '',
+    this.autoDeleteAfterUpload = false,
+    this.lastUploadBatchId,
+    this.lastImportedModelVersion,
+    this.lastImportedAt,
+  });
+
+  AppSettings copyWith({
+    String? serverUrl,
+    String? apiKey,
+    String? batchName,
+    String? modelImportUrl,
+    bool? autoDeleteAfterUpload,
+    String? lastUploadBatchId,
+    String? lastImportedModelVersion,
+    DateTime? lastImportedAt,
+  }) =>
+      AppSettings(
+        serverUrl: serverUrl ?? this.serverUrl,
+        apiKey: apiKey ?? this.apiKey,
+        batchName: batchName ?? this.batchName,
+        modelImportUrl: modelImportUrl ?? this.modelImportUrl,
+        autoDeleteAfterUpload:
+            autoDeleteAfterUpload ?? this.autoDeleteAfterUpload,
+        lastUploadBatchId: lastUploadBatchId ?? this.lastUploadBatchId,
+        lastImportedModelVersion:
+            lastImportedModelVersion ?? this.lastImportedModelVersion,
+        lastImportedAt: lastImportedAt ?? this.lastImportedAt,
+      );
+}
+
+// ── Settings Service ──────────────────────────────────────────────────────────
+
+class SettingsService {
+  static const _kServerUrl = 'ds_server_url';
+  static const _kApiKey = 'ds_api_key';
+  static const _kBatchName = 'ds_batch_name';
+  static const _kModelImportUrl = 'ds_model_import_url';
+  static const _kAutoDelete = 'ds_auto_delete_after_upload';
+  static const _kLastBatchId = 'ds_last_upload_batch_id';
+  static const _kLastModelVersion = 'ds_last_imported_model_version';
+  static const _kLastImportedAt = 'ds_last_imported_at';
+  // Persistent local model file paths (survive restart)
+  static const _kLocalModelPath = 'ds_local_model_path';
+  static const _kLocalLabelsPath = 'ds_local_labels_path';
+  static const _kLocalMetadataPath = 'ds_local_metadata_path';
+
+  static Future<AppSettings> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastImportedAtStr = prefs.getString(_kLastImportedAt);
+    return AppSettings(
+      serverUrl: prefs.getString(_kServerUrl) ?? '',
+      apiKey: prefs.getString(_kApiKey) ?? '',
+      batchName: prefs.getString(_kBatchName) ?? 'batch_001',
+      modelImportUrl: prefs.getString(_kModelImportUrl) ?? '',
+      autoDeleteAfterUpload: prefs.getBool(_kAutoDelete) ?? false,
+      lastUploadBatchId: prefs.getString(_kLastBatchId),
+      lastImportedModelVersion: prefs.getString(_kLastModelVersion),
+      lastImportedAt: lastImportedAtStr != null
+          ? DateTime.tryParse(lastImportedAtStr)
+          : null,
+    );
+  }
+
+  static Future<void> save(AppSettings s) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kServerUrl, s.serverUrl);
+    await prefs.setString(_kApiKey, s.apiKey);
+    await prefs.setString(_kBatchName, s.batchName);
+    await prefs.setString(_kModelImportUrl, s.modelImportUrl);
+    await prefs.setBool(_kAutoDelete, s.autoDeleteAfterUpload);
+    if (s.lastUploadBatchId != null)
+      await prefs.setString(_kLastBatchId, s.lastUploadBatchId!);
+    if (s.lastImportedModelVersion != null)
+      await prefs.setString(_kLastModelVersion, s.lastImportedModelVersion!);
+    if (s.lastImportedAt != null)
+      await prefs.setString(
+          _kLastImportedAt, s.lastImportedAt!.toIso8601String());
+  }
+
+  /// Persist local model file paths after a successful import.
+  static Future<void> saveModelPaths({
+    required String modelPath,
+    String? labelsPath,
+    String? metadataPath,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLocalModelPath, modelPath);
+    if (labelsPath != null)
+      await prefs.setString(_kLocalLabelsPath, labelsPath);
+    if (metadataPath != null)
+      await prefs.setString(_kLocalMetadataPath, metadataPath);
+  }
+
+  /// Load saved model paths. Returns null values when not set.
+  static Future<({String? modelPath, String? labelsPath, String? metadataPath})>
+      loadModelPaths() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (
+      modelPath: prefs.getString(_kLocalModelPath),
+      labelsPath: prefs.getString(_kLocalLabelsPath),
+      metadataPath: prefs.getString(_kLocalMetadataPath),
+    );
+  }
+
+  /// Clear saved model paths (e.g. when files are missing).
+  static Future<void> clearModelPaths() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kLocalModelPath);
+    await prefs.remove(_kLocalLabelsPath);
+    await prefs.remove(_kLocalMetadataPath);
+  }
+}
+
+// ── Export Sample Model ───────────────────────────────────────────────────────
+
+class ExportSample {
+  final String id;
+  final String vocabulary;
+  final String? pngBase64;
+  final String strokeJson;
+  final double strokeWidth;
+  final DateTime createdAt;
+  final String? exportedBatchId;
+  final bool uploaded;
+  final bool deleted;
+  final String source;
+
+  const ExportSample({
+    required this.id,
+    required this.vocabulary,
+    this.pngBase64,
+    required this.strokeJson,
+    required this.strokeWidth,
+    required this.createdAt,
+    this.exportedBatchId,
+    this.uploaded = false,
+    this.deleted = false,
+    this.source = 'manual_draw',
+  });
+
+  factory ExportSample.fromMap(Map<String, dynamic> m) => ExportSample(
+        id: m['id'] as String,
+        vocabulary: m['vocabulary'] as String,
+        pngBase64: m['png_base64'] as String?,
+        strokeJson: m['stroke_json'] as String,
+        strokeWidth: (m['stroke_width'] as num).toDouble(),
+        createdAt: DateTime.parse(m['created_at'] as String),
+        exportedBatchId: m['exported_batch_id'] as String?,
+        uploaded: (m['uploaded'] as int?) == 1,
+        deleted: (m['deleted'] as int?) == 1,
+        source: (m['source'] as String?) ?? 'manual_draw',
+      );
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'vocabulary': vocabulary,
+        'png_base64': pngBase64,
+        'stroke_json': strokeJson,
+        'stroke_width': strokeWidth,
+        'created_at': createdAt.toIso8601String(),
+        'exported_batch_id': exportedBatchId,
+        'uploaded': uploaded ? 1 : 0,
+        'deleted': deleted ? 1 : 0,
+        'source': source,
+      };
+}
+
 // ── DB Service ────────────────────────────────────────────────────────────────
 
 class DbService {
@@ -420,7 +630,6 @@ class DbService {
 
   static Future<void> _onUpgrade(Database db, int old, int newV) async {
     if (old < 2) {
-      // practice_count may not exist in bundled DB — always wrap
       for (final sql in [
         'ALTER TABLE $kTable ADD COLUMN practice_count INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE $kTable ADD COLUMN last_practiced_at TEXT',
@@ -430,12 +639,10 @@ class DbService {
         } catch (_) {}
       }
     }
-    // v3: new embedding + prototype tables (idempotent via IF NOT EXISTS)
     await _createTables(db);
   }
 
   static Future<void> _createTables(Database db) async {
-    // Legacy sample table (kept for OCR accuracy tracking)
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $kTableSamples (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -450,7 +657,6 @@ class DbService {
         created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
       )
     ''');
-    // Raw embeddings (one row per check)
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $kTableEmbeddings (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -460,7 +666,6 @@ class DbService {
         created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
       )
     ''');
-    // EMA prototype per character
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $kTablePrototypes (
         vocabulary    TEXT    PRIMARY KEY,
@@ -469,10 +674,27 @@ class DbService {
         updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
       )
     ''');
+    // v4: export samples table (separate from handwriting_samples)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $kTableExportSamples (
+        id                TEXT    PRIMARY KEY,
+        vocabulary        TEXT    NOT NULL,
+        png_base64        TEXT,
+        stroke_json       TEXT    NOT NULL,
+        stroke_width      REAL    NOT NULL DEFAULT 10.0,
+        created_at        TEXT    NOT NULL,
+        exported_batch_id TEXT,
+        uploaded          INTEGER NOT NULL DEFAULT 0,
+        deleted           INTEGER NOT NULL DEFAULT 0,
+        source            TEXT    NOT NULL DEFAULT 'manual_draw'
+      )
+    ''');
     for (final sql in [
       'CREATE INDEX IF NOT EXISTS idx_samples_vocab    ON $kTableSamples(vocabulary)',
       'CREATE INDEX IF NOT EXISTS idx_samples_created  ON $kTableSamples(vocabulary, created_at DESC)',
       'CREATE INDEX IF NOT EXISTS idx_emb_vocab        ON $kTableEmbeddings(vocabulary)',
+      'CREATE INDEX IF NOT EXISTS idx_export_vocab     ON $kTableExportSamples(vocabulary)',
+      'CREATE INDEX IF NOT EXISTS idx_export_uploaded  ON $kTableExportSamples(uploaded)',
     ]) {
       try {
         await db.execute(sql);
@@ -512,11 +734,9 @@ class DbService {
     return rows.map(VocabEntry.fromMap).toList();
   }
 
-  // ── Practice count (safe — reads from embedding table, not vocab_clean) ──────
+  // ── Practice count ────────────────────────────────────────────────────────
 
-  static Future<void> incrementPracticeCount(String vocabulary) async {
-    // No-op: count is now derived from kTableEmbeddings.
-  }
+  static Future<void> incrementPracticeCount(String vocabulary) async {}
 
   static Future<int> getPracticeCount(String vocabulary) async {
     return getEmbeddingCount(vocabulary);
@@ -569,7 +789,7 @@ class DbService {
     ''', [vocabulary, protoJson, count]);
   }
 
-  // ── Samples ───────────────────────────────────────────────────────────────
+  // ── Samples (legacy OCR tracking) ────────────────────────────────────────
 
   static Future<int> saveSample({
     required String vocabulary,
@@ -616,7 +836,6 @@ class DbService {
 
   static Future<Map<String, dynamic>> getVocabStats(String vocabulary) async {
     final embCount = await getEmbeddingCount(vocabulary);
-    // OCR accuracy: tử số và mẫu số cùng từ handwriting_samples
     final rows = await db.rawQuery(
       'SELECT COUNT(*) AS total, SUM(ocr_matched) AS matched FROM $kTableSamples WHERE vocabulary = ?',
       [vocabulary],
@@ -628,35 +847,122 @@ class DbService {
       'ocr_accuracy': total > 0 ? matched / total : 0.0,
     };
   }
+
+  // ── Export Samples ────────────────────────────────────────────────────────
+
+  static Future<String> saveExportSample({
+    required String vocabulary,
+    required String strokeJson,
+    required double strokeWidth,
+    String? pngBase64,
+  }) async {
+    final id = const Uuid().v4();
+    final now = DateTime.now().toIso8601String();
+    await db.insert(kTableExportSamples, {
+      'id': id,
+      'vocabulary': vocabulary,
+      'png_base64': pngBase64,
+      'stroke_json': strokeJson,
+      'stroke_width': strokeWidth,
+      'created_at': now,
+      'exported_batch_id': null,
+      'uploaded': 0,
+      'deleted': 0,
+      'source': 'manual_draw',
+    });
+    return id;
+  }
+
+  static Future<List<ExportSample>> getPendingExportSamples() async {
+    final rows = await db.rawQuery(
+      'SELECT * FROM $kTableExportSamples WHERE uploaded = 0 AND deleted = 0 ORDER BY created_at ASC',
+    );
+    return rows.map(ExportSample.fromMap).toList();
+  }
+
+  static Future<int> getPendingExportCount() async {
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) as cnt FROM $kTableExportSamples WHERE uploaded = 0 AND deleted = 0',
+    );
+    return (rows.first['cnt'] as int?) ?? 0;
+  }
+
+  static Future<int> getExportSampleCountByVocab(String vocabulary) async {
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) as cnt FROM $kTableExportSamples WHERE vocabulary = ? AND deleted = 0',
+      [vocabulary],
+    );
+    return (rows.first['cnt'] as int?) ?? 0;
+  }
+
+  static Future<void> markExportSamplesUploaded(
+      List<String> ids, String batchId) async {
+    if (ids.isEmpty) return;
+    final ph = List.filled(ids.length, '?').join(',');
+    await db.rawUpdate(
+      'UPDATE $kTableExportSamples SET uploaded = 1, exported_batch_id = ? WHERE id IN ($ph)',
+      [batchId, ...ids],
+    );
+  }
+
+  static Future<void> deleteExportSamplesByBatch(String batchId) async {
+    await db.rawUpdate(
+      'UPDATE $kTableExportSamples SET deleted = 1 WHERE exported_batch_id = ?',
+      [batchId],
+    );
+  }
+
+  static Future<void> deleteAllLocalExportSamples() async {
+    await db.rawUpdate(
+      'UPDATE $kTableExportSamples SET deleted = 1 WHERE uploaded = 0',
+    );
+  }
 }
 
 // ── Embedding Encoder ─────────────────────────────────────────────────────────
-// Interface for on-device encoder.  Swap in a real TFLite model by implementing
-// the body of [encode].  Until then every call returns null → fallback is used.
 
 class EmbeddingEncoder {
   static const int dim = 64;
 
-  /// Run TFLite encoder inference.  Returns null when model is not loaded.
-  static Future<List<double>?> encode(Uint8List pngBytes) async {
-    // TODO: uncomment when model asset is added to pubspec + assets/:
-    //
-    // try {
-    //   final interpreter = await tfl.Interpreter.fromAsset(
-    //     'assets/models/encoder.tflite',
-    //     options: tfl.InterpreterOptions()..threads = 2,
-    //   );
-    //   final input  = _preprocess(pngBytes); // [1, 64, 64, 1] float32
-    //   final output = List.filled(dim, 0.0).reshape([1, dim]);
-    //   interpreter.run(input, output);
-    //   interpreter.close();
-    //   return (output[0] as List).map((e) => (e as num).toDouble()).toList();
-    // } catch (e) {
-    //   debugPrint('[EmbeddingEncoder] $e');
-    //   return null;
-    // }
+  // ── Imported model metadata (populated by ModelImportService) ─────────────
+  static String? _localModelPath;
+  static String? _importedVersion;
+  static DateTime? _importedAt;
 
-    return null; // ← model not available yet
+  /// Returns true if a locally-imported model file is present.
+  static bool hasImportedModel() =>
+      _localModelPath != null && File(_localModelPath!).existsSync();
+
+  /// Path to the local imported model (null if not yet imported).
+  static String? getLocalModelPath() => _localModelPath;
+
+  /// Metadata of the imported model.
+  static Map<String, dynamic> loadImportedModelMetadata() => {
+        'path': _localModelPath,
+        'version': _importedVersion,
+        'importedAt': _importedAt?.toIso8601String(),
+      };
+
+  /// Called by [ModelImportService] after a successful import.
+  static void setLocalModel({
+    required String path,
+    String? version,
+    DateTime? importedAt,
+  }) {
+    _localModelPath = path;
+    _importedVersion = version;
+    _importedAt = importedAt;
+  }
+
+  /// Run TFLite encoder inference.
+  /// TODO: replace stub with real tflite_flutter inference once package is added.
+  static Future<List<double>?> encode(Uint8List pngBytes) async {
+    if (!hasImportedModel()) return null;
+    // TODO: load interpreter from getLocalModelPath(), run inference, return embedding.
+    // Example (requires tflite_flutter package):
+    // final interpreter = await tfl.Interpreter.fromFile(File(_localModelPath!));
+    // ...
+    return null;
   }
 
   /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
@@ -670,6 +976,348 @@ class EmbeddingEncoder {
       }
     }
     return out;
+  }
+}
+
+// ── Model Import Service ──────────────────────────────────────────────────────
+
+enum ModelImportStatus { idle, loading, success, failed }
+
+class ModelImportResult {
+  final ModelImportStatus status;
+  final String? version;
+  final String? errorMsg;
+
+  const ModelImportResult({
+    required this.status,
+    this.version,
+    this.errorMsg,
+  });
+}
+
+class ModelImportService {
+  /// Import encoder from FastAPI server.
+  ///
+  /// Flow:
+  ///   GET {serverUrl}/api/model/latest
+  ///   → { ok, encoderUrl, labelsUrl, metadataUrl, encoderExists, ... }
+  ///   Download each file; persist paths to SharedPreferences.
+  static Future<ModelImportResult> importEncoder({
+    required String importUrl,
+    required String apiKey,
+    required AppSettings currentSettings,
+  }) async {
+    final baseUrl = _normalizeBase(
+      importUrl.isNotEmpty ? importUrl : currentSettings.serverUrl,
+    );
+    if (baseUrl.isEmpty) {
+      return const ModelImportResult(
+          status: ModelImportStatus.failed, errorMsg: 'server URL is empty');
+    }
+
+    // Keep old paths so we can restore on failure
+    final oldPaths = await SettingsService.loadModelPaths();
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final modelsDir = Directory(p.join(dir.path, 'models'));
+      if (!modelsDir.existsSync()) modelsDir.createSync(recursive: true);
+
+      final headers = _authHeaders(apiKey);
+
+      // Step 1: fetch model metadata
+      final latestUrl = _buildAbsoluteUrl(baseUrl, '/api/model/latest');
+      final metaResp = await http
+          .get(Uri.parse(latestUrl), headers: headers)
+          .timeout(const Duration(seconds: 30));
+
+      if (metaResp.statusCode != 200) {
+        return ModelImportResult(
+          status: ModelImportStatus.failed,
+          errorMsg: 'server ${metaResp.statusCode}',
+        );
+      }
+
+      final meta = jsonDecode(metaResp.body) as Map<String, dynamic>;
+      if (meta['ok'] != true) {
+        return ModelImportResult(
+          status: ModelImportStatus.failed,
+          errorMsg: 'server ok=false',
+        );
+      }
+
+      final encoderExists = meta['encoderExists'] == true;
+      if (!encoderExists) {
+        return const ModelImportResult(
+          status: ModelImportStatus.failed,
+          errorMsg: 'no encoder on server',
+        );
+      }
+
+      // Resolve relative paths → absolute URLs
+      final encoderPath = meta['encoderUrl'] as String? ?? '/api/model/encoder';
+      final labelsPath = meta['labelsUrl'] as String?;
+      final metadataPath = meta['metadataUrl'] as String?;
+      final labelsExists = meta['labelsExists'] == true;
+      final metadataExists = meta['metadataExists'] == true;
+
+      final encoderUrl = _buildAbsoluteUrl(baseUrl, encoderPath);
+      final labelsUrl = (labelsExists && labelsPath != null)
+          ? _buildAbsoluteUrl(baseUrl, labelsPath)
+          : null;
+      final metadataUrl = (metadataExists && metadataPath != null)
+          ? _buildAbsoluteUrl(baseUrl, metadataPath)
+          : null;
+
+      // Step 2: download encoder.tflite
+      final tfliteDest = p.join(modelsDir.path, 'encoder.tflite');
+      await _downloadFile(
+          url: encoderUrl, destPath: tfliteDest, headers: headers);
+
+      // Step 3: optionally download labels.json
+      String? labelsDest;
+      if (labelsUrl != null) {
+        labelsDest = p.join(modelsDir.path, 'labels.json');
+        await _downloadFile(
+            url: labelsUrl, destPath: labelsDest, headers: headers);
+      }
+
+      // Step 4: optionally download metadata.json
+      String? metadataDest;
+      if (metadataUrl != null) {
+        metadataDest = p.join(modelsDir.path, 'metadata.json');
+        await _downloadFile(
+            url: metadataUrl, destPath: metadataDest, headers: headers);
+      }
+
+      // Derive version from metadata.json if available
+      String version = 'unknown';
+      if (metadataDest != null && File(metadataDest).existsSync()) {
+        try {
+          final raw = jsonDecode(File(metadataDest).readAsStringSync())
+              as Map<String, dynamic>;
+          version = (raw['version'] as String?) ?? 'unknown';
+        } catch (_) {}
+      }
+
+      final importedAt = DateTime.now();
+
+      // Activate in RAM
+      EmbeddingEncoder.setLocalModel(
+        path: tfliteDest,
+        version: version,
+        importedAt: importedAt,
+      );
+
+      // Persist paths + settings
+      await SettingsService.saveModelPaths(
+        modelPath: tfliteDest,
+        labelsPath: labelsDest,
+        metadataPath: metadataDest,
+      );
+      final updated = currentSettings.copyWith(
+        lastImportedModelVersion: version,
+        lastImportedAt: importedAt,
+      );
+      await SettingsService.save(updated);
+
+      return ModelImportResult(
+          status: ModelImportStatus.success, version: version);
+    } catch (e) {
+      debugPrint('[ModelImportService] $e');
+      // Restore old model if it still exists
+      if (oldPaths.modelPath != null &&
+          File(oldPaths.modelPath!).existsSync()) {
+        EmbeddingEncoder.setLocalModel(
+          path: oldPaths.modelPath!,
+          version: currentSettings.lastImportedModelVersion,
+        );
+      }
+      return ModelImportResult(
+          status: ModelImportStatus.failed, errorMsg: e.toString());
+    }
+  }
+
+  static Future<void> _downloadFile({
+    required String url,
+    required String destPath,
+    required Map<String, String> headers,
+  }) async {
+    final resp = await http
+        .get(Uri.parse(url), headers: headers)
+        .timeout(const Duration(seconds: 60));
+    if (resp.statusCode != 200) {
+      throw Exception('download $url → ${resp.statusCode}');
+    }
+    await File(destPath).writeAsBytes(resp.bodyBytes, flush: true);
+  }
+}
+
+// ── Export Service ────────────────────────────────────────────────────────────
+
+enum ExportStatus { idle, exporting, success, failed }
+
+class ExportResult {
+  final ExportStatus status;
+  final int uploadedCount;
+  final String? batchId;
+  final String? errorMsg;
+
+  const ExportResult({
+    required this.status,
+    this.uploadedCount = 0,
+    this.batchId,
+    this.errorMsg,
+  });
+}
+
+class DatasetExportService {
+  static String generateBatchId() {
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    return 'batch_${ts}_${const Uuid().v4().substring(0, 8)}';
+  }
+
+  static Future<ExportResult> exportDataset({
+    required AppSettings settings,
+  }) async {
+    if (settings.serverUrl.trim().isEmpty) {
+      return const ExportResult(
+          status: ExportStatus.failed, errorMsg: 'server URL is empty');
+    }
+
+    final pending = await DbService.getPendingExportSamples();
+    if (pending.isEmpty) {
+      return const ExportResult(
+          status: ExportStatus.failed, errorMsg: 'no pending samples');
+    }
+
+    final batchId = generateBatchId();
+    final now = DateTime.now().toIso8601String();
+    Directory? tmpDir;
+
+    try {
+      // ── Step 1: write PNG files into a temp folder tree ──────────────────
+      tmpDir = await Directory(
+        p.join((await getTemporaryDirectory()).path, 'export_batch', batchId),
+      ).create(recursive: true);
+
+      final groupedCounts = <String, int>{};
+      final sampleIds = <String>[];
+
+      for (final s in pending) {
+        if (s.pngBase64 == null || s.pngBase64!.isEmpty) continue;
+        final vocabDir = await Directory(p.join(tmpDir.path, s.vocabulary))
+            .create(recursive: true);
+        final pngBytes = base64Decode(s.pngBase64!);
+        await File(p.join(vocabDir.path, '${s.id}.png'))
+            .writeAsBytes(pngBytes, flush: true);
+        groupedCounts[s.vocabulary] = (groupedCounts[s.vocabulary] ?? 0) + 1;
+        sampleIds.add(s.id);
+      }
+
+      if (sampleIds.isEmpty) {
+        return const ExportResult(
+            status: ExportStatus.failed, errorMsg: 'no samples with PNG data');
+      }
+
+      // ── Step 2: zip the temp folder ──────────────────────────────────────
+      final zipPath =
+          p.join((await getTemporaryDirectory()).path, '$batchId.zip');
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      await encoder.addDirectory(tmpDir, includeDirName: false);
+      encoder.close();
+      final zipBytes = await File(zipPath).readAsBytes();
+
+      // ── Step 3: build metadataJson ───────────────────────────────────────
+      final metadataJson = jsonEncode({
+        'totalSamples': sampleIds.length,
+        'exportedAt': now,
+        'sampleIds': sampleIds,
+        'groupedCounts': groupedCounts,
+      });
+
+      // ── Step 4: multipart POST ───────────────────────────────────────────
+      final uploadUrl = _buildAbsoluteUrl(
+          _normalizeBase(settings.serverUrl), '/api/dataset/upload');
+
+      final request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
+      request.headers.addAll(_authHeaders(settings.apiKey));
+      request.fields['batchName'] = settings.batchName;
+      request.fields['batchId'] = batchId;
+      request.fields['createdAt'] = now;
+      request.fields['metadataJson'] = metadataJson;
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'datasetZip',
+          zipBytes,
+          filename: '$batchId.zip',
+        ),
+      );
+
+      final streamed =
+          await request.send().timeout(const Duration(seconds: 180));
+      final resp = await http.Response.fromStream(streamed);
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        return ExportResult(
+          status: ExportStatus.failed,
+          errorMsg:
+              'server ${resp.statusCode}: ${resp.body.substring(0, math.min(120, resp.body.length))}',
+        );
+      }
+
+      // ── Step 5: mark uploaded ────────────────────────────────────────────
+      await DbService.markExportSamplesUploaded(
+          pending.map((s) => s.id).toList(), batchId);
+
+      if (settings.autoDeleteAfterUpload) {
+        await DbService.deleteExportSamplesByBatch(batchId);
+      }
+
+      final updatedSettings = settings.copyWith(lastUploadBatchId: batchId);
+      await SettingsService.save(updatedSettings);
+
+      return ExportResult(
+        status: ExportStatus.success,
+        uploadedCount: sampleIds.length,
+        batchId: batchId,
+      );
+    } catch (e) {
+      debugPrint('[DatasetExportService] $e');
+      return ExportResult(status: ExportStatus.failed, errorMsg: e.toString());
+    } finally {
+      // Clean up temp files regardless of outcome
+      try {
+        tmpDir?.deleteSync(recursive: true);
+      } catch (_) {}
+      try {
+        final zipPath =
+            p.join((await getTemporaryDirectory()).path, '$batchId.zip');
+        final zf = File(zipPath);
+        if (zf.existsSync()) zf.deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  /// Test connectivity: GET {baseUrl}/api/health → { "ok": true }
+  static Future<bool> testConnection(String url, String apiKey) async {
+    if (url.trim().isEmpty) return false;
+    try {
+      final healthUrl = _buildAbsoluteUrl(_normalizeBase(url), '/api/health');
+      final resp = await http
+          .get(Uri.parse(healthUrl), headers: _authHeaders(apiKey))
+          .timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) return false;
+      try {
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        return body['ok'] == true;
+      } catch (_) {
+        return true; // 200 OK is good enough
+      }
+    } catch (_) {
+      return false;
+    }
   }
 }
 
@@ -697,10 +1345,8 @@ class SaveEmbeddingResult {
 }
 
 class PrototypeService {
-  /// EMA learning rate — new sample contributes 20 % to prototype.
   static const double _alpha = 0.20;
 
-  /// Save embedding, update EMA prototype, return result with current count.
   static Future<SaveEmbeddingResult> saveAndUpdate({
     required String vocabulary,
     required List<double> embedding,
@@ -729,7 +1375,6 @@ class PrototypeService {
         final old = (jsonDecode(proto['prototype_json'] as String) as List)
             .map((e) => (e as num).toDouble())
             .toList();
-        // EMA: proto = (1-α)*old + α*new
         newProto = List.generate(
           embedding.length,
           (i) => old[i] * (1 - _alpha) + embedding[i] * _alpha,
@@ -751,8 +1396,6 @@ class PrototypeService {
     }
   }
 
-  /// Compute similarity against current prototype WITHOUT updating it.
-  /// Call this BEFORE saveAndUpdate to avoid self-bias.
   static Future<double?> computeSimilarity({
     required String vocabulary,
     required List<double> embedding,
@@ -765,17 +1408,11 @@ class PrototypeService {
     return _cosine(embedding, protoVec);
   }
 
-  /// Cosine similarity between [embedding] and stored prototype. Null if no prototype yet.
   static Future<double?> similarityToPrototype({
     required String vocabulary,
     required List<double> embedding,
   }) async {
-    final proto = await DbService.getPrototype(vocabulary);
-    if (proto == null) return null;
-    final protoVec = (jsonDecode(proto['prototype_json'] as String) as List)
-        .map((e) => (e as num).toDouble())
-        .toList();
-    return _cosine(embedding, protoVec);
+    return computeSimilarity(vocabulary: vocabulary, embedding: embedding);
   }
 
   static double _cosine(List<double> a, List<double> b) {
@@ -794,7 +1431,6 @@ class PrototypeService {
 // ── Local Learning Service ────────────────────────────────────────────────────
 
 class LocalLearningService {
-  /// Caller must pre-compute [embedding] and [isFallback] (encode once outside).
   static Future<CheckResult> onCheck({
     required String vocabulary,
     required List<String> ocrRaw,
@@ -812,13 +1448,11 @@ class LocalLearningService {
       );
     }
 
-    // 1. Compute similarity vs OLD prototype BEFORE updating (avoid self-bias)
     final simBefore = await PrototypeService.computeSimilarity(
       vocabulary: vocabulary,
       embedding: embedding,
     );
 
-    // 2. Save embedding + update prototype
     final saveResult = await PrototypeService.saveAndUpdate(
       vocabulary: vocabulary,
       embedding: embedding,
@@ -834,7 +1468,6 @@ class LocalLearningService {
       );
     }
 
-    // 3. Write to legacy samples table for OCR accuracy tracking
     final ocrMatched = ocrRaw.contains(vocabulary) ||
         ocrRaw.any((r) => r.contains(vocabulary));
     try {
@@ -1004,9 +1637,14 @@ class AppState extends ChangeNotifier {
   SimilarityResult? _similarityResult;
   MatchSource _matchSource = MatchSource.none;
 
-  /// One-shot toast fired after an embedding is saved.
-  /// UI should read and then call [consumeToast].
   ToastMessage? _pendingToast;
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+  AppSettings _settings = const AppSettings();
+
+  // ── Dataset / Export state ────────────────────────────────────────────────
+  int _pendingUploadCount = 0;
+  int _localSampleCountForPinned = 0;
 
   bool get ready => _ready;
   String? get initError => _initError;
@@ -1022,17 +1660,22 @@ class AppState extends ChangeNotifier {
   SimilarityResult? get similarityResult => _similarityResult;
   ToastMessage? get pendingToast => _pendingToast;
   MatchSource get matchSource => _matchSource;
+  AppSettings get settings => _settings;
+  int get pendingUploadCount => _pendingUploadCount;
+  int get localSampleCountForPinned => _localSampleCountForPinned;
 
-  /// Called by the UI after it has displayed the toast.
   void consumeToast() {
     if (_pendingToast == null) return;
     _pendingToast = null;
-    // No notifyListeners — avoids rebuild loop.
   }
 
   Future<void> init() async {
     try {
       await DbService.init();
+      _settings = await SettingsService.load();
+      _pendingUploadCount = await DbService.getPendingExportCount();
+      // Restore imported model paths that survived a restart
+      await _restoreLocalModel();
     } catch (e, st) {
       debugPrint('[AppState.init] $e');
       debugPrint(st.toString());
@@ -1042,6 +1685,32 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  /// Re-activates EmbeddingEncoder from persisted paths if files still exist.
+  Future<void> _restoreLocalModel() async {
+    final paths = await SettingsService.loadModelPaths();
+    if (paths.modelPath == null) return;
+    if (File(paths.modelPath!).existsSync()) {
+      EmbeddingEncoder.setLocalModel(
+        path: paths.modelPath!,
+        version: _settings.lastImportedModelVersion,
+        importedAt: _settings.lastImportedAt,
+      );
+    } else {
+      // File was removed; clean up stale prefs
+      await SettingsService.clearModelPaths();
+    }
+  }
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+
+  Future<void> updateSettings(AppSettings s) async {
+    _settings = s;
+    await SettingsService.save(s);
+    notifyListeners();
+  }
+
+  // ── Canvas ────────────────────────────────────────────────────────────────
 
   void setStrokeWidth(double v) {
     _strokeWidth = v.clamp(4.0, 24.0);
@@ -1105,6 +1774,7 @@ class AppState extends ChangeNotifier {
     _showPinnedTemplate = true;
     _searchQuery = '';
     _searchSuggestions = [];
+    _refreshPinnedSampleCount();
     notifyListeners();
   }
 
@@ -1112,8 +1782,48 @@ class AppState extends ChangeNotifier {
     _pinnedEntry = null;
     _showPinnedTemplate = false;
     _similarityResult = null;
+    _localSampleCountForPinned = 0;
     notifyListeners();
   }
+
+  Future<void> _refreshPinnedSampleCount() async {
+    if (_pinnedEntry == null) return;
+    _localSampleCountForPinned =
+        await DbService.getExportSampleCountByVocab(_pinnedEntry!.vocabulary);
+    _pendingUploadCount = await DbService.getPendingExportCount();
+    notifyListeners();
+  }
+
+  // ── Save Sample ───────────────────────────────────────────────────────────
+
+  Future<bool> saveSample() async {
+    if (_pinnedEntry == null) return false;
+    if (_canvas.strokes.isEmpty) return false;
+
+    try {
+      final pngBytes = await CanvasRenderService.renderPngBytes(
+        _canvas.strokes,
+        strokeWidth: _strokeWidth,
+      );
+      final pngBase64 = base64Encode(pngBytes);
+      final strokeJson = StrokeSerializer.toJson(_canvas.strokes);
+
+      await DbService.saveExportSample(
+        vocabulary: _pinnedEntry!.vocabulary,
+        strokeJson: strokeJson,
+        strokeWidth: _strokeWidth,
+        pngBase64: pngBase64,
+      );
+
+      await _refreshPinnedSampleCount();
+      return true;
+    } catch (e) {
+      debugPrint('[saveSample] $e');
+      return false;
+    }
+  }
+
+  // ── Recognize ─────────────────────────────────────────────────────────────
 
   Future<void> recognize() async {
     if (_busy || _canvas.strokes.isEmpty) return;
@@ -1125,19 +1835,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // ── Step 1: Render PNG ───────────────────────────────────────────────
       final pngBytes = await CanvasRenderService.renderPngBytes(
         _canvas.strokes,
         strokeWidth: _strokeWidth,
       );
 
-      // ── Step 2: Encode ONCE ──────────────────────────────────────────────
       final List<double>? tflEmb = await EmbeddingEncoder.encode(pngBytes);
       final bool isFallback = tflEmb == null;
       final List<double> embedding =
           tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
 
-      // ── Step 3: Proto-first decision ─────────────────────────────────────
       bool matchedByProto = false;
       List<String> raw = const [];
       List<VocabEntry> matches = const [];
@@ -1150,7 +1857,6 @@ class AppState extends ChangeNotifier {
           embedding: embedding,
         );
 
-        // Count-adaptive threshold: more samples → lower bar
         final protoThresh = count >= 10
             ? 0.58
             : count >= 5
@@ -1158,7 +1864,6 @@ class AppState extends ChangeNotifier {
                 : 0.75;
 
         if (simBefore != null && simBefore >= protoThresh) {
-          // ── PROTO MATCH: skip OCR ───────────────────────────────────────
           matchedByProto = true;
           matches = [_pinnedEntry!];
           _matchSource = MatchSource.proto;
@@ -1166,7 +1871,6 @@ class AppState extends ChangeNotifier {
       }
 
       if (!matchedByProto) {
-        // ── FALLBACK: call OCR ──────────────────────────────────────────────
         if (!_isIOS) {
           _result = const RecResult(
             error: 'Vision OCR chỉ chạy trên iPhone/iOS.',
@@ -1180,7 +1884,6 @@ class AppState extends ChangeNotifier {
           maxCandidates: kTopK,
         );
 
-        // Soft-inject pinned entry if OCR missed it but sim is close
         VocabEntry? softInjected;
         if (_showPinnedTemplate && _pinnedEntry != null && raw.isNotEmpty) {
           final sim = await PrototypeService.computeSimilarity(
@@ -1227,7 +1930,6 @@ class AppState extends ChangeNotifier {
         matchSource: _matchSource,
       );
 
-      // ── Step 4: Save embedding + update prototype (always, after result) ──
       if (_showPinnedTemplate && _pinnedEntry != null) {
         final checkResult = await LocalLearningService.onCheck(
           vocabulary: _pinnedEntry!.vocabulary,
