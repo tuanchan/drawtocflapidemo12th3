@@ -213,10 +213,17 @@ class _EmbeddingToastState extends State<_EmbeddingToast>
                     ],
                   ),
                   const SizedBox(width: 10),
-                  const Text(
-                    '嵌入已儲存',
+                  Text(
+                    widget.message.statusLabel,
                     style: TextStyle(
-                        color: kTextSecondary, fontSize: 9, letterSpacing: 0.8),
+                      color: widget.message.status == ToastStatus.dbError
+                          ? kError
+                          : widget.message.status == ToastStatus.savedFallback
+                              ? kTextSecondary
+                              : kSuccess,
+                      fontSize: 9,
+                      letterSpacing: 0.8,
+                    ),
                   ),
                 ],
               ),

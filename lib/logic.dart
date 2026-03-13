@@ -20,8 +20,10 @@ const String kDbAsset = 'assets/db/tocfl_vocab_clean.db';
 const String kDbFile = 'tocfl_vocab_clean.db';
 const String kTable = 'vocab_clean';
 const String kTableSamples = 'handwriting_samples';
+const String kTableEmbeddings = 'char_embeddings';
+const String kTablePrototypes = 'char_prototypes';
 const int kTopK = 10;
-const int kDbVersion = 2;
+const int kDbVersion = 3;
 
 const MethodChannel _visionChannel = MethodChannel('tocfl_writer/vision_ocr');
 
@@ -150,15 +152,31 @@ class RecResult {
 
 // ── Toast Message ─────────────────────────────────────────────────────────────
 
-/// Carries a one-shot toast payload.  UI calls [consume] after showing it.
+enum ToastStatus { saved, savedFallback, noModel, dbError }
+
 class ToastMessage {
   final String char;
   final int embeddingCount;
+  final ToastStatus status;
 
-  const ToastMessage({required this.char, required this.embeddingCount});
+  const ToastMessage({
+    required this.char,
+    required this.embeddingCount,
+    this.status = ToastStatus.saved,
+  });
 
-  /// E.g.  "學 · 嵌入 #7"
-  String get label => '$char · 嵌入 #$embeddingCount';
+  String get statusLabel {
+    switch (status) {
+      case ToastStatus.saved:
+        return '嵌入已儲存';
+      case ToastStatus.savedFallback:
+        return '嵌入已儲存 (rule-based)';
+      case ToastStatus.noModel:
+        return '未載入模型';
+      case ToastStatus.dbError:
+        return 'DB 寫入失敗';
+    }
+  }
 }
 
 // ── Stroke Serializer ─────────────────────────────────────────────────────────
@@ -339,6 +357,7 @@ class DbService {
 
   static Future<void> _onUpgrade(Database db, int old, int newV) async {
     if (old < 2) {
+      // practice_count may not exist in bundled DB — always wrap
       for (final sql in [
         'ALTER TABLE $kTable ADD COLUMN practice_count INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE $kTable ADD COLUMN last_practiced_at TEXT',
@@ -347,11 +366,13 @@ class DbService {
           await db.execute(sql);
         } catch (_) {}
       }
-      await _createTables(db);
     }
+    // v3: new embedding + prototype tables (idempotent via IF NOT EXISTS)
+    await _createTables(db);
   }
 
   static Future<void> _createTables(Database db) async {
+    // Legacy sample table (kept for OCR accuracy tracking)
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $kTableSamples (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -366,12 +387,34 @@ class DbService {
         created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
       )
     ''');
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_samples_vocab   ON $kTableSamples(vocabulary)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_samples_created ON $kTableSamples(vocabulary, created_at DESC)',
-    );
+    // Raw embeddings (one row per check)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $kTableEmbeddings (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        vocabulary    TEXT    NOT NULL,
+        embedding_json TEXT   NOT NULL,
+        is_fallback   INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    ''');
+    // EMA prototype per character
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $kTablePrototypes (
+        vocabulary    TEXT    PRIMARY KEY,
+        prototype_json TEXT   NOT NULL,
+        count         INTEGER NOT NULL DEFAULT 1,
+        updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    ''');
+    for (final sql in [
+      'CREATE INDEX IF NOT EXISTS idx_samples_vocab    ON $kTableSamples(vocabulary)',
+      'CREATE INDEX IF NOT EXISTS idx_samples_created  ON $kTableSamples(vocabulary, created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_emb_vocab        ON $kTableEmbeddings(vocabulary)',
+    ]) {
+      try {
+        await db.execute(sql);
+      } catch (_) {}
+    }
   }
 
   static Database get db => _db!;
@@ -406,27 +449,61 @@ class DbService {
     return rows.map(VocabEntry.fromMap).toList();
   }
 
-  // ── Practice count ────────────────────────────────────────────────────────
+  // ── Practice count (safe — reads from embedding table, not vocab_clean) ──────
 
   static Future<void> incrementPracticeCount(String vocabulary) async {
-    await db.execute(
-      '''
-      UPDATE $kTable
-      SET practice_count    = practice_count + 1,
-          last_practiced_at = datetime('now')
-      WHERE vocabulary = ?
-      ''',
-      [vocabulary],
-    );
+    // No-op: count is now derived from kTableEmbeddings.
   }
 
   static Future<int> getPracticeCount(String vocabulary) async {
+    return getEmbeddingCount(vocabulary);
+  }
+
+  // ── Embeddings ────────────────────────────────────────────────────────────
+
+  static Future<void> saveEmbedding({
+    required String vocabulary,
+    required String embJson,
+    required bool isFallback,
+  }) async {
+    await db.insert(kTableEmbeddings, {
+      'vocabulary': vocabulary,
+      'embedding_json': embJson,
+      'is_fallback': isFallback ? 1 : 0,
+    });
+  }
+
+  static Future<int> getEmbeddingCount(String vocabulary) async {
     final rows = await db.rawQuery(
-      'SELECT practice_count FROM $kTable WHERE vocabulary = ? LIMIT 1',
+      'SELECT COUNT(*) as cnt FROM $kTableEmbeddings WHERE vocabulary = ?',
       [vocabulary],
     );
-    if (rows.isEmpty) return 0;
-    return (rows.first['practice_count'] as int?) ?? 0;
+    return (rows.first['cnt'] as int?) ?? 0;
+  }
+
+  // ── Prototypes ────────────────────────────────────────────────────────────
+
+  static Future<Map<String, dynamic>?> getPrototype(String vocabulary) async {
+    final rows = await db.rawQuery(
+      'SELECT prototype_json, count FROM $kTablePrototypes WHERE vocabulary = ?',
+      [vocabulary],
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  static Future<void> upsertPrototype({
+    required String vocabulary,
+    required String protoJson,
+    required int count,
+  }) async {
+    await db.execute('''
+      INSERT INTO $kTablePrototypes (vocabulary, prototype_json, count, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(vocabulary) DO UPDATE SET
+        prototype_json = excluded.prototype_json,
+        count          = excluded.count,
+        updated_at     = excluded.updated_at
+    ''', [vocabulary, protoJson, count]);
   }
 
   // ── Samples ───────────────────────────────────────────────────────────────
@@ -475,23 +552,165 @@ class DbService {
   }
 
   static Future<Map<String, dynamic>> getVocabStats(String vocabulary) async {
+    final embCount = await getEmbeddingCount(vocabulary);
     final rows = await db.rawQuery(
-      '''
-      SELECT COUNT(*) AS total, SUM(ocr_matched) AS matched, MAX(created_at) AS last_at
-      FROM $kTableSamples WHERE vocabulary = ?
-      ''',
+      'SELECT SUM(ocr_matched) AS matched FROM $kTableSamples WHERE vocabulary = ?',
       [vocabulary],
     );
-    final practice = await getPracticeCount(vocabulary);
-    final row = rows.first;
-    final total = (row['total'] as int?) ?? 0;
-    final matched = (row['matched'] as int?) ?? 0;
+    final matched = (rows.first['matched'] as int?) ?? 0;
     return {
-      'practice_count': practice,
-      'sample_count': total,
-      'ocr_accuracy': total > 0 ? matched / total : 0.0,
-      'last_practiced': row['last_at'],
+      'practice_count': embCount, // UI key reused — no widget change needed
+      'sample_count': embCount,
+      'ocr_accuracy': embCount > 0 ? matched / embCount : 0.0,
+      'last_practiced': null,
     };
+  }
+}
+
+// ── Embedding Encoder ─────────────────────────────────────────────────────────
+// Interface for on-device encoder.  Swap in a real TFLite model by implementing
+// the body of [encode].  Until then every call returns null → fallback is used.
+
+class EmbeddingEncoder {
+  static const int dim = 64;
+
+  /// Run TFLite encoder inference.  Returns null when model is not loaded.
+  static Future<List<double>?> encode(Uint8List pngBytes) async {
+    // TODO: uncomment when model asset is added to pubspec + assets/:
+    //
+    // try {
+    //   final interpreter = await tfl.Interpreter.fromAsset(
+    //     'assets/models/encoder.tflite',
+    //     options: tfl.InterpreterOptions()..threads = 2,
+    //   );
+    //   final input  = _preprocess(pngBytes); // [1, 64, 64, 1] float32
+    //   final output = List.filled(dim, 0.0).reshape([1, dim]);
+    //   interpreter.run(input, output);
+    //   interpreter.close();
+    //   return (output[0] as List).map((e) => (e as num).toDouble()).toList();
+    // } catch (e) {
+    //   debugPrint('[EmbeddingEncoder] $e');
+    //   return null;
+    // }
+
+    return null; // ← model not available yet
+  }
+
+  /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
+  static List<double> fallback(List<StrokeData> strokes) {
+    final base = StrokeFeatures.fromStrokes(strokes).values;
+    final out = <double>[];
+    while (out.length < dim) {
+      for (final v in base) {
+        if (out.length >= dim) break;
+        out.add(v);
+      }
+    }
+    return out;
+  }
+}
+
+// ── Prototype Service ─────────────────────────────────────────────────────────
+
+enum SaveEmbeddingStatus { ok, okFallback, dbError }
+
+class SaveEmbeddingResult {
+  final SaveEmbeddingStatus status;
+  final int count;
+  final String? errorMsg;
+
+  const SaveEmbeddingResult._({
+    required this.status,
+    this.count = 0,
+    this.errorMsg,
+  });
+
+  factory SaveEmbeddingResult.ok(int count) =>
+      SaveEmbeddingResult._(status: SaveEmbeddingStatus.ok, count: count);
+  factory SaveEmbeddingResult.okFallback(int count) => SaveEmbeddingResult._(
+      status: SaveEmbeddingStatus.okFallback, count: count);
+  factory SaveEmbeddingResult.dbError(String msg) =>
+      SaveEmbeddingResult._(status: SaveEmbeddingStatus.dbError, errorMsg: msg);
+}
+
+class PrototypeService {
+  /// EMA learning rate — new sample contributes 20 % to prototype.
+  static const double _alpha = 0.20;
+
+  /// Save embedding, update EMA prototype, return result with current count.
+  static Future<SaveEmbeddingResult> saveAndUpdate({
+    required String vocabulary,
+    required List<double> embedding,
+    required bool isFallback,
+  }) async {
+    try {
+      await DbService.saveEmbedding(
+        vocabulary: vocabulary,
+        embJson: jsonEncode(embedding),
+        isFallback: isFallback,
+      );
+    } catch (e) {
+      return SaveEmbeddingResult.dbError(e.toString());
+    }
+
+    try {
+      final proto = await DbService.getPrototype(vocabulary);
+      final List<double> newProto;
+      final int newCount;
+
+      if (proto == null) {
+        newProto = embedding;
+        newCount = 1;
+      } else {
+        newCount = (proto['count'] as int) + 1;
+        final old = (jsonDecode(proto['prototype_json'] as String) as List)
+            .map((e) => (e as num).toDouble())
+            .toList();
+        // EMA: proto = (1-α)*old + α*new
+        newProto = List.generate(
+          embedding.length,
+          (i) => old[i] * (1 - _alpha) + embedding[i] * _alpha,
+        );
+      }
+
+      await DbService.upsertPrototype(
+        vocabulary: vocabulary,
+        protoJson: jsonEncode(newProto),
+        count: newCount,
+      );
+
+      final count = await DbService.getEmbeddingCount(vocabulary);
+      return isFallback
+          ? SaveEmbeddingResult.okFallback(count)
+          : SaveEmbeddingResult.ok(count);
+    } catch (e) {
+      return SaveEmbeddingResult.dbError(e.toString());
+    }
+  }
+
+  /// Cosine similarity between [embedding] and stored prototype. Null if no prototype yet.
+  static Future<double?> similarityToPrototype({
+    required String vocabulary,
+    required List<double> embedding,
+  }) async {
+    final proto = await DbService.getPrototype(vocabulary);
+    if (proto == null) return null;
+    final protoVec = (jsonDecode(proto['prototype_json'] as String) as List)
+        .map((e) => (e as num).toDouble())
+        .toList();
+    return _cosine(embedding, protoVec);
+  }
+
+  static double _cosine(List<double> a, List<double> b) {
+    double dot = 0, nA = 0, nB = 0;
+    final len = math.min(a.length, b.length);
+    for (var i = 0; i < len; i++) {
+      dot += a[i] * b[i];
+      nA += a[i] * a[i];
+      nB += b[i] * b[i];
+    }
+    final d = math.sqrt(nA) * math.sqrt(nB);
+    return d < 1e-10 ? 0.0 : (dot / d).clamp(0.0, 1.0);
   }
 }
 
@@ -506,60 +725,63 @@ class LocalLearningService {
   }) async {
     if (strokes.isEmpty || vocabulary.isEmpty) return null;
 
-    final features = StrokeFeatures.fromStrokes(strokes);
-    final strokeJson = StrokeSerializer.toJson(strokes);
-    final ocrMatched = ocrRaw.contains(vocabulary) ||
-        ocrRaw.any((r) => r.contains(vocabulary));
+    // 1. Render PNG for encoder (reuse existing service)
+    Uint8List? pngBytes;
+    try {
+      pngBytes = await CanvasRenderService.renderPngBytes(
+        strokes,
+        strokeWidth: strokeWidth,
+      );
+    } catch (_) {}
 
-    await DbService.saveSample(
+    // 2. Try TFLite encoder → fallback to rule-based
+    List<double>? tflEmb =
+        pngBytes != null ? await EmbeddingEncoder.encode(pngBytes) : null;
+    final isFallback = tflEmb == null;
+    final embedding = tflEmb ?? EmbeddingEncoder.fallback(strokes);
+
+    // 3. Save embedding + update EMA prototype
+    final saveResult = await PrototypeService.saveAndUpdate(
       vocabulary: vocabulary,
-      strokeJson: strokeJson,
-      pngBase64: null,
-      strokeCount: strokes.length,
-      strokeWidth: strokeWidth,
-      ocrRaw: ocrRaw,
-      ocrMatched: ocrMatched,
-      featureJson: features.toJson(),
+      embedding: embedding,
+      isFallback: isFallback,
     );
 
-    await DbService.incrementPracticeCount(vocabulary);
+    // 4. Also write to legacy samples table for OCR accuracy tracking
+    final ocrMatched = ocrRaw.contains(vocabulary) ||
+        ocrRaw.any((r) => r.contains(vocabulary));
+    try {
+      await DbService.saveSample(
+        vocabulary: vocabulary,
+        strokeJson: StrokeSerializer.toJson(strokes),
+        pngBase64: null,
+        strokeCount: strokes.length,
+        strokeWidth: strokeWidth,
+        ocrRaw: ocrRaw,
+        ocrMatched: ocrMatched,
+        featureJson: null,
+      );
+    } catch (_) {}
 
-    return _compare(strokes: strokes, vocabulary: vocabulary);
-  }
+    // 5. Cosine similarity vs prototype
+    if (saveResult.status == SaveEmbeddingStatus.dbError) return null;
+    final sim = await PrototypeService.similarityToPrototype(
+      vocabulary: vocabulary,
+      embedding: embedding,
+    );
+    if (sim == null) return null;
 
-  static Future<SimilarityResult?> _compare({
-    required List<StrokeData> strokes,
-    required String vocabulary,
-  }) async {
-    final rows = await DbService.getRecentSamples(vocabulary, limit: 10);
-    if (rows.length < 2) return null;
-
-    final stored = <StrokeFeatures>[];
-    for (final row in rows) {
-      final fJson = row['feature_json'] as String?;
-      if (fJson != null && fJson.isNotEmpty) {
-        try {
-          stored.add(StrokeFeatures.fromJson(fJson));
-        } catch (_) {}
-      }
-    }
-    if (stored.isEmpty) return null;
-
-    final current = StrokeFeatures.fromStrokes(strokes);
-    final avg = StrokeFeatures.average(stored);
-    final score = current.cosineSimilarity(avg);
-
-    final feedback = score >= 0.85
-        ? '一致性優秀 ${(score * 100).round()}%'
-        : score >= 0.70
-            ? '寫法穩定 ${(score * 100).round()}%'
-            : score >= 0.55
-                ? '略有差異 ${(score * 100).round()}%'
-                : '筆法不同 ${(score * 100).round()}% — 再試試';
+    final feedback = sim >= 0.85
+        ? '一致性優秀 ${(sim * 100).round()}%'
+        : sim >= 0.70
+            ? '寫法穩定 ${(sim * 100).round()}%'
+            : sim >= 0.55
+                ? '略有差異 ${(sim * 100).round()}%'
+                : '筆法不同 ${(sim * 100).round()}% — 再試試';
 
     return SimilarityResult(
-      score: score,
-      samplesCompared: stored.length,
+      score: sim,
+      samplesCompared: saveResult.count,
       feedback: feedback,
     );
   }
@@ -568,7 +790,7 @@ class LocalLearningService {
       List<String> vocabularies) async {
     final scores = <String, double>{};
     for (final v in vocabularies) {
-      final count = await DbService.getPracticeCount(v);
+      final count = await DbService.getEmbeddingCount(v);
       scores[v] = math.min(count / 5.0 * 0.1, 0.5);
     }
     return scores;
@@ -841,34 +1063,20 @@ class AppState extends ChangeNotifier {
         maxCandidates: kTopK,
       );
 
-      // ── Feature-based fallback when OCR misses the pinned character ────────
-      // If tmpl is active and we have ≥3 embeddings, compute cosine similarity.
-      // If the score clears the threshold, inject the pinned entry as top match
-      // regardless of what OCR said (or didn't say).
+      // ── Prototype-based fallback when OCR misses the pinned character ────────
       VocabEntry? featureInjected;
       if (_showPinnedTemplate && _pinnedEntry != null) {
-        final sampleRows = await DbService.getRecentSamples(
-            _pinnedEntry!.vocabulary,
-            limit: 10);
-        if (sampleRows.length >= 3) {
-          final stored = <StrokeFeatures>[];
-          for (final row in sampleRows) {
-            final fj = row['feature_json'] as String?;
-            if (fj != null && fj.isNotEmpty) {
-              try {
-                stored.add(StrokeFeatures.fromJson(fj));
-              } catch (_) {}
-            }
-          }
-          if (stored.isNotEmpty) {
-            final cur = StrokeFeatures.fromStrokes(_canvas.strokes);
-            final sim = cur.cosineSimilarity(StrokeFeatures.average(stored));
-            // Threshold: ≥0.60 → inject; more samples → lower threshold.
-            final thresh = stored.length >= 7 ? 0.55 : 0.60;
-            if (sim >= thresh) {
-              featureInjected = _pinnedEntry;
-            }
-          }
+        final emb = await EmbeddingEncoder.encode(pngBytes) ??
+            EmbeddingEncoder.fallback(_canvas.strokes);
+        final sim = await PrototypeService.similarityToPrototype(
+          vocabulary: _pinnedEntry!.vocabulary,
+          embedding: emb,
+        );
+        if (sim != null) {
+          final count =
+              await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
+          final thresh = count >= 7 ? 0.55 : 0.60;
+          if (sim >= thresh) featureInjected = _pinnedEntry;
         }
       }
 
@@ -888,7 +1096,6 @@ class AppState extends ChangeNotifier {
 
       final vocabs = matches.map((e) => e.vocabulary).toList();
       final boosts = await LocalLearningService.getBoostScores(vocabs);
-      // When feature-injected, keep it pinned at top regardless of sort.
       final sortedTail = featureInjected != null
           ? _sortMatchesByCandidateOrder(matches.skip(1).toList(), raw, boosts)
           : _sortMatchesByCandidateOrder(matches, raw, boosts);
@@ -907,11 +1114,14 @@ class AppState extends ChangeNotifier {
           strokeWidth: _strokeWidth,
         );
 
-        // Count total embeddings saved for this character and fire toast.
-        final count = await DbService.getSampleCount(_pinnedEntry!.vocabulary);
+        final count =
+            await DbService.getEmbeddingCount(_pinnedEntry!.vocabulary);
+        // Detect whether model is available for toast status
+        final hasModel = await EmbeddingEncoder.encode(pngBytes) != null;
         _pendingToast = ToastMessage(
           char: _pinnedEntry!.vocabulary,
           embeddingCount: count,
+          status: hasModel ? ToastStatus.saved : ToastStatus.savedFallback,
         );
       }
     } catch (e, st) {
