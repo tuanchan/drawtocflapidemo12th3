@@ -168,7 +168,35 @@ jobs:
             echo "BUILD_TYPE=release" >> $GITHUB_ENV
           fi
 
-      # ── 10. Build APK ─────────────────────────────────────────────────────────
+      # ── 10. Fix Gradle / AGP compatibility ───────────────────────────────────
+      # Flutter 3.24.x yêu cầu Gradle wrapper ≥ 8.3 và AGP ≥ 8.1.
+      # Project cũ dùng wrapper 7.x gây lỗi "[!] unsupported Gradle project".
+      - name: Upgrade Android Gradle wrapper
+        run: |
+          mkdir -p android/gradle/wrapper
+          cat > android/gradle/wrapper/gradle-wrapper.properties <<'GWEOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          GWEOF
+
+          # Patch AGP version trong build.gradle nếu cần (Groovy DSL)
+          if [ -f android/build.gradle ]; then
+            sed -i "s/com\.android\.tools\.build:gradle:[0-9.]*/com.android.tools.build:gradle:8.1.0/g" \
+              android/build.gradle
+          fi
+          # Patch AGP version (Kotlin DSL)
+          if [ -f android/build.gradle.kts ]; then
+            sed -i 's/id("com\.android\.application") version "[^"]*"/id("com.android.application") version "8.1.0"/g' \
+              android/build.gradle.kts
+          fi
+
+          echo "=== gradle-wrapper.properties ==="
+          cat android/gradle/wrapper/gradle-wrapper.properties
+
+      # ── 11. Build APK ─────────────────────────────────────────────────────────
       - name: Build APK (release)
         if: env.BUILD_TYPE == 'release'
         run: |
