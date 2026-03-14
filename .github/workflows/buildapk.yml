@@ -168,33 +168,39 @@ jobs:
             echo "BUILD_TYPE=release" >> $GITHUB_ENV
           fi
 
-      # ── 10. Fix Gradle / AGP compatibility ───────────────────────────────────
-      # Flutter 3.24.x yêu cầu Gradle wrapper ≥ 8.3 và AGP ≥ 8.1.
-      # Project cũ dùng wrapper 7.x gây lỗi "[!] unsupported Gradle project".
-      - name: Upgrade Android Gradle wrapper
+      # ── 10. Regenerate android/ folder (Flutter Gradle compatibility) ──────────
+      # Flutter 3.24.x detect "unsupported Gradle project" khi settings.gradle /
+      # build.gradle dùng DSL cũ (trước Flutter 3.16). Patch wrapper không đủ —
+      # cần regenerate toàn bộ android/ bằng `flutter create`, sau đó restore lại
+      # các file project-specific (AndroidManifest, build.gradle của app module,
+      # google-services.json nếu có).
+      - name: Regenerate android/ for Gradle compatibility
         run: |
-          mkdir -p android/gradle/wrapper
-          cat > android/gradle/wrapper/gradle-wrapper.properties <<'GWEOF'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-bin.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          GWEOF
+          mkdir -p /tmp/android-backup/app
 
-          # Patch AGP version trong build.gradle nếu cần (Groovy DSL)
-          if [ -f android/build.gradle ]; then
-            sed -i "s/com\.android\.tools\.build:gradle:[0-9.]*/com.android.tools.build:gradle:8.1.0/g" \
-              android/build.gradle
-          fi
-          # Patch AGP version (Kotlin DSL)
-          if [ -f android/build.gradle.kts ]; then
-            sed -i 's/id("com\.android\.application") version "[^"]*"/id("com.android.application") version "8.1.0"/g' \
-              android/build.gradle.kts
-          fi
+          cp android/app/src/main/AndroidManifest.xml        /tmp/android-backup/app/ 2>/dev/null || true
+          cp android/app/build.gradle                        /tmp/android-backup/app/ 2>/dev/null || true
+          cp android/app/build.gradle.kts                   /tmp/android-backup/app/ 2>/dev/null || true
+          cp android/key.properties                         /tmp/android-backup/      2>/dev/null || true
+          cp android/app/google-services.json               /tmp/android-backup/app/ 2>/dev/null || true
+
+          rm -rf android/
+          flutter create \
+            --platforms android \
+            --project-name tocfl_writer \
+            --org com.example \
+            . 2>&1 | tail -5
+
+          cp /tmp/android-backup/app/AndroidManifest.xml    android/app/src/main/ 2>/dev/null || true
+          [ -f /tmp/android-backup/app/build.gradle ]     && cp /tmp/android-backup/app/build.gradle     android/app/build.gradle
+          [ -f /tmp/android-backup/app/build.gradle.kts ] && cp /tmp/android-backup/app/build.gradle.kts android/app/build.gradle.kts
+          cp /tmp/android-backup/key.properties             android/                  2>/dev/null || true
+          cp /tmp/android-backup/app/google-services.json  android/app/              2>/dev/null || true
 
           echo "=== gradle-wrapper.properties ==="
           cat android/gradle/wrapper/gradle-wrapper.properties
+          echo "=== Gradle files ==="
+          find android -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) | sort
 
       # ── 11. Build APK ─────────────────────────────────────────────────────────
       - name: Build APK (release)
