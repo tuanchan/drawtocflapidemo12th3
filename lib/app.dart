@@ -1662,7 +1662,6 @@ class _InfoArea extends StatelessWidget {
       return SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Chữ to lên đầu ──────────────────────────────────────────────
           Text(entry.vocabulary,
               style: const TextStyle(
                   color: kAccent,
@@ -1670,11 +1669,9 @@ class _InfoArea extends StatelessWidget {
                   fontWeight: FontWeight.w200,
                   height: 1)),
           const SizedBox(height: 8),
-          // ── Chip % top candidate ─────────────────────────────────────────
           if (state.realtimeCandidates.isNotEmpty)
             _TopCandidateChips(candidates: state.realtimeCandidates),
           const SizedBox(height: 8),
-          // ── Metadata ─────────────────────────────────────────────────────
           if (entry.pinyin != null)
             Text(entry.pinyin!,
                 style: const TextStyle(
@@ -1698,7 +1695,6 @@ class _InfoArea extends StatelessWidget {
           const SizedBox(height: 10),
           const Divider(color: kBorder, height: 1),
           const SizedBox(height: 8),
-          // ── Stats ─────────────────────────────────────────────────────────
           Wrap(spacing: 6, runSpacing: 4, children: [
             FutureBuilder<int>(
               future: DbService.getEmbeddingCount(entry.vocabulary),
@@ -1960,6 +1956,27 @@ class _Tag extends StatelessWidget {
 }
 
 // ── Button ────────────────────────────────────────────────────────────────────
+class _MiniChip extends StatelessWidget {
+  final String label;
+  const _MiniChip(this.label);
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          border: Border.all(color: kBorder),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            color: kTextMuted,
+            fontSize: 9,
+            letterSpacing: 0.4,
+          ),
+        ),
+      );
+}
 
 class _Btn extends StatelessWidget {
   final String label;
