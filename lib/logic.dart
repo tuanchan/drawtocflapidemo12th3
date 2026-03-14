@@ -392,8 +392,10 @@ class StrokeFeatures {
     final bboxH = _clamp01(height / kLogicalSize);
     final bboxArea = _clamp01(area / (kLogicalSize * kLogicalSize));
 
-    final avgPointsPerStroke = _safeDiv(totalPoints.toDouble(), strokeCount);
-    final avgSegmentLength = _safeDiv(totalLength, math.max(segCount, 1));
+    final avgPointsPerStroke =
+        _safeDiv(totalPoints.toDouble(), strokeCount.toDouble());
+    final avgSegmentLength =
+        _safeDiv(totalLength, math.max(segCount, 1).toDouble());
     final aspectNorm = _clamp01(_safeDiv(width, width + height + _eps));
     final compactnessNorm = _clamp01(
       _safeDiv(totalLength * totalLength, 4 * math.pi * area + _eps) /
@@ -429,7 +431,8 @@ class StrokeFeatures {
 
     final turnMean = _mean(turnAngles);
     final turnStd = _std(turnAngles, turnMean);
-    final penLiftRatio = _clamp01(_safeDiv(strokeCount - 1, totalPoints - 1));
+    final penLiftRatio = _clamp01(
+        _safeDiv((strokeCount - 1).toDouble(), (totalPoints - 1).toDouble()));
 
     final straightnessVals = <double>[];
     for (var i = 0; i < nonEmpty.length; i++) {
