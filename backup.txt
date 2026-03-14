@@ -20,11 +20,6 @@ const kTextMuted = Color(0xFF444038);
 const kSuccess = Color(0xFF6FCF6F);
 const kError = Color(0xFFCF6F6F);
 
-extension AccentX on BuildContext {
-  Color get accent => watch<AppState>().accentColor;
-  Color get accentRead => read<AppState>().accentColor;
-}
-
 class WriterApp extends StatelessWidget {
   const WriterApp({super.key});
   @override
@@ -516,86 +511,6 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 ),
               ),
             ]),
-            const SizedBox(height: 10),
-            Row(children: [
-              const Text('show realtime chips',
-                  style: TextStyle(
-                      color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => context.read<AppState>().setShowRealtimeChips(
-                    !context.read<AppState>().showRealtimeChips),
-                child: Container(
-                  width: 36,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: context.watch<AppState>().showRealtimeChips
-                        ? kAccentDim
-                        : kBorder,
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: AnimatedAlign(
-                    duration: const Duration(milliseconds: 150),
-                    alignment: context.watch<AppState>().showRealtimeChips
-                        ? Alignment.centerRight
-                        : Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2),
-                      child: Container(
-                        width: 14,
-                        height: 14,
-                        decoration: BoxDecoration(
-                          color: context.watch<AppState>().showRealtimeChips
-                              ? kAccent
-                              : kTextMuted,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 12),
-            Text('accent color',
-                style: const TextStyle(
-                    color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              children: [
-                const Color(0xFFE8D5B0),
-                const Color(0xFFFFFFFF),
-                const Color(0xFF6FCF6F),
-                const Color(0xFF7EB8F7),
-                const Color(0xFFCFAA6F),
-                const Color(0xFFCF6FCF),
-                const Color(0xFFCF6F6F),
-              ].map((c) {
-                final isSelected = appState.accentColor == c;
-                return GestureDetector(
-                  onTap: () => context.read<AppState>().setAccentColor(c),
-                  child: Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: c,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: isSelected ? c : kBorder,
-                        width: isSelected ? 2.5 : 1,
-                      ),
-                      boxShadow: isSelected
-                          ? [
-                              BoxShadow(
-                                  color: c.withOpacity(0.6), blurRadius: 6)
-                            ]
-                          : null,
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
             const SizedBox(height: 16),
             Wrap(spacing: 6, runSpacing: 4, children: [
               _InfoChip(
@@ -941,34 +856,19 @@ class _Body extends StatelessWidget {
               child: _MobileInfoBar(),
             ),
             const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (ctx, c) {
-                  final canvasSize = min(c.maxWidth, c.maxHeight);
-                  return Stack(
-                    children: [
-                      Align(
-                        alignment: Alignment.topCenter,
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: const _DrawCanvas(),
-                        ),
-                      ),
-                      Positioned(
-                        top: canvasSize + 6 + 10,
-                        left: 0,
-                        right: 0,
-                        child: context.watch<AppState>().showRealtimeChips
-                            ? const SizedBox(
-                                height: kBottomInfoHeight,
-                                child: _BottomBar(),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    ],
-                  );
-                },
+            const Expanded(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: _DrawCanvas(),
+                ),
               ),
+            ),
+            const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+            const SizedBox(
+              height: kBottomInfoHeight,
+              child: _BottomBar(),
             ),
           ],
         );
@@ -1497,7 +1397,6 @@ class _DrawCanvas extends StatelessWidget {
                 state.pinnedEntry?.vocabulary,
                 state.strokeWidth,
                 state.showPinnedTemplate,
-                state.accentColor,
               ),
             ),
           ),
@@ -1512,10 +1411,8 @@ class _CanvasPainter extends CustomPainter {
   final String? hint;
   final double strokeWidth;
   final bool showPinnedTemplate;
-  final Color accentColor;
-
-  _CanvasPainter(this.canvas, this.hint, this.strokeWidth,
-      this.showPinnedTemplate, this.accentColor);
+  _CanvasPainter(
+      this.canvas, this.hint, this.strokeWidth, this.showPinnedTemplate);
 
   @override
   void paint(Canvas c, Size sz) {
@@ -1545,8 +1442,7 @@ class _CanvasPainter extends CustomPainter {
         text: TextSpan(
             text: hint,
             style: TextStyle(
-                color:
-                    accentColor.withOpacity(showPinnedTemplate ? 0.18 : 0.12),
+                color: kAccent.withOpacity(showPinnedTemplate ? 0.18 : 0.12),
                 fontSize: sz.width * 0.55,
                 fontWeight: FontWeight.w200,
                 height: 1)),
@@ -1557,7 +1453,7 @@ class _CanvasPainter extends CustomPainter {
     }
 
     final ink = Paint()
-      ..color = accentColor
+      ..color = kAccent
       ..strokeWidth = strokeWidth * scale
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
@@ -1587,8 +1483,7 @@ class _CanvasPainter extends CustomPainter {
       old.canvas != canvas ||
       old.hint != hint ||
       old.strokeWidth != strokeWidth ||
-      old.showPinnedTemplate != showPinnedTemplate ||
-      old.accentColor != accentColor;
+      old.showPinnedTemplate != showPinnedTemplate;
 }
 
 // ── Canvas Controls ───────────────────────────────────────────────────────────

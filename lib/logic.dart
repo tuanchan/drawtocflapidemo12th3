@@ -483,6 +483,29 @@ class SettingsService {
   static const _kLocalModelPath = 'ds_local_model_path';
   static const _kLocalLabelsPath = 'ds_local_labels_path';
   static const _kLocalMetadataPath = 'ds_local_metadata_path';
+  static const _kAccentColor = 'accent_color';
+  static const _kShowRealtimeChips = 'show_realtime_chips';
+
+  static Future<bool> loadShowRealtimeChips() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kShowRealtimeChips) ?? true;
+  }
+
+  static Future<void> saveShowRealtimeChips(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kShowRealtimeChips, v);
+  }
+
+  static Future<Color> loadAccentColor() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getInt(_kAccentColor);
+    return v != null ? Color(v) : const Color(0xFFE8D5B0);
+  }
+
+  static Future<void> saveAccentColor(Color c) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kAccentColor, c.value);
+  }
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -1866,6 +1889,23 @@ class AppState extends ChangeNotifier {
   List<ProtoMatchCandidate> get realtimeCandidates => _realtimeCandidates;
   bool get realtimeBusy => _realtimeBusy;
   String get realtimeSource => _realtimeSource;
+  // thêm vào trong class AppState, gần các field khác
+  bool _showRealtimeChips = true;
+  bool get showRealtimeChips => _showRealtimeChips;
+  Color _accentColor = const Color(0xFFE8D5B0);
+  Color get accentColor => _accentColor;
+
+  void setAccentColor(Color c) {
+    _accentColor = c;
+    SettingsService.saveAccentColor(c);
+    notifyListeners();
+  }
+
+  void setShowRealtimeChips(bool v) {
+    _showRealtimeChips = v;
+    SettingsService.saveShowRealtimeChips(v); // THÊM
+    notifyListeners();
+  }
 
   void consumeToast() {
     if (_pendingToast == null) return;
@@ -1877,6 +1917,9 @@ class AppState extends ChangeNotifier {
       await DbService.init();
       _settings = await SettingsService.load();
       _pendingUploadCount = await DbService.getPendingExportCount();
+      _accentColor = await SettingsService.loadAccentColor(); // THÊM
+      _showRealtimeChips =
+          await SettingsService.loadShowRealtimeChips(); // THÊM
       // Restore imported model paths that survived a restart
       await _restoreLocalModel();
     } catch (e, st) {
