@@ -42,7 +42,7 @@ const String kTableEmbeddings = 'char_embeddings';
 const String kTablePrototypes = 'char_prototypes';
 const String kTableExportSamples = 'export_samples';
 const int kTopK = 10;
-const int kDbVersion = 4;
+const int kDbVersion = 5;
 
 const MethodChannel _visionChannel = MethodChannel('tocfl_writer/vision_ocr');
 
@@ -261,63 +261,254 @@ class StrokeSerializer {
 class StrokeFeatures {
   final List<double> values;
   const StrokeFeatures(this.values);
-  static const int dimension = 12;
+  static const int dimension = 64;
+
+  static const double _eps = 1e-8;
+
+  static double _clamp01(double v) => v.clamp(0.0, 1.0);
+  static double _safeDiv(double n, double d) => d.abs() < _eps ? 0.0 : n / d;
+  static double _normByCanvas(double v) => _clamp01(v / kLogicalSize);
+  static double _normCount(int v, int cap) => _clamp01(v / cap);
+  static double _balance01(double a, double b) {
+    final s = a + b;
+    if (s.abs() < _eps) return 0.5;
+    final ratio = (a - b) / s;
+    return _clamp01((ratio + 1.0) / 2.0);
+  }
+  static double _std(List<double> values, double mean) {
+    if (values.isEmpty) return 0.0;
+    var sum = 0.0;
+    for (final v in values) {
+      final d = v - mean;
+      sum += d * d;
+    }
+    return math.sqrt(sum / values.length);
+  }
+  static int _dir8Index(double angle) {
+    final oct = ((angle + math.pi) / (math.pi / 4)).round() % 8;
+    switch (oct) {
+      case 4:
+        return 0; // E
+      case 5:
+        return 1; // SE
+      case 6:
+        return 2; // S
+      case 7:
+        return 3; // SW
+      case 0:
+        return 4; // W
+      case 1:
+        return 5; // NW
+      case 2:
+        return 6; // N
+      default:
+        return 7; // NE
+    }
+  }
 
   factory StrokeFeatures.fromStrokes(List<StrokeData> strokes) {
     if (strokes.isEmpty) return StrokeFeatures(List.filled(dimension, 0.0));
 
+    final nonEmpty = strokes.where((s) => s.points.isNotEmpty).toList();
+    if (nonEmpty.isEmpty) return StrokeFeatures(List.filled(dimension, 0.0));
+
     double minX = double.infinity, minY = double.infinity;
     double maxX = double.negativeInfinity, maxY = double.negativeInfinity;
-    int totalPoints = 0;
-    int dirR = 0, dirD = 0, dirL = 0, dirU = 0, dirTotal = 0;
-    double totalLength = 0;
+    var totalPoints = 0;
+    var totalLength = 0.0;
+    final dirHist = List<double>.filled(8, 0.0);
+    var segCount = 0;
+    var right = 0.0, left = 0.0, up = 0.0, down = 0.0;
+    final grid = List<double>.filled(16, 0.0);
+    final strokeLengths = <double>[];
+    final strokePointCounts = <double>[];
+    final absTurns = <double>[];
+    final straightness = <double>[];
+    final startPts = <StrokePoint>[];
+    final endPts = <StrokePoint>[];
 
-    for (final s in strokes) {
-      for (final pt in s.points) {
-        if (pt.x < minX) minX = pt.x;
-        if (pt.y < minY) minY = pt.y;
-        if (pt.x > maxX) maxX = pt.x;
-        if (pt.y > maxY) maxY = pt.y;
-        totalPoints++;
-      }
-      for (var i = 1; i < s.points.length; i++) {
-        final dx = s.points[i].x - s.points[i - 1].x;
-        final dy = s.points[i].y - s.points[i - 1].y;
+    for (final s in nonEmpty) {
+      strokePointCounts.add(s.points.length.toDouble());
+      totalPoints += s.points.length;
+      startPts.add(s.points.first);
+      endPts.add(s.points.last);
+
+      var strokeLen = 0.0;
+      for (var i = 0; i < s.points.length; i++) {
+        final pt = s.points[i];
+        minX = math.min(minX, pt.x);
+        minY = math.min(minY, pt.y);
+        maxX = math.max(maxX, pt.x);
+        maxY = math.max(maxY, pt.y);
+
+        final cx = (pt.x / (kLogicalSize / 4)).floor().clamp(0, 3);
+        final cy = (pt.y / (kLogicalSize / 4)).floor().clamp(0, 3);
+        grid[(cy * 4 + cx).toInt()] += 1.0;
+
+        if (i == 0) continue;
+        final prev = s.points[i - 1];
+        final dx = pt.x - prev.x;
+        final dy = pt.y - prev.y;
         final len = math.sqrt(dx * dx + dy * dy);
+        if (len < _eps) continue;
+
+        strokeLen += len;
         totalLength += len;
-        if (len < 0.5) continue;
-        dirTotal++;
-        final angle = math.atan2(dy, dx);
-        if (angle >= -math.pi / 4 && angle < math.pi / 4)
-          dirR++;
-        else if (angle >= math.pi / 4 && angle < 3 * math.pi / 4)
-          dirD++;
-        else if (angle >= 3 * math.pi / 4 || angle < -3 * math.pi / 4)
-          dirL++;
-        else
-          dirU++;
+        segCount++;
+
+        dirHist[_dir8Index(math.atan2(dy, dx))] += len;
+
+        if (dx >= 0) {
+          right += dx.abs();
+        } else {
+          left += dx.abs();
+        }
+        if (dy >= 0) {
+          down += dy.abs();
+        } else {
+          up += dy.abs();
+        }
+        if (i >= 2) {
+          final p0 = s.points[i - 2];
+          final p1 = prev;
+          final p2 = pt;
+          final v1x = p1.x - p0.x;
+          final v1y = p1.y - p0.y;
+          final v2x = p2.x - p1.x;
+          final v2y = p2.y - p1.y;
+          final n1 = math.sqrt(v1x * v1x + v1y * v1y);
+          final n2 = math.sqrt(v2x * v2x + v2y * v2y);
+          if (n1 > _eps && n2 > _eps) {
+            final c = ((v1x * v2x + v1y * v2y) / (n1 * n2)).clamp(-1.0, 1.0);
+            absTurns.add(math.acos(c).abs());
+          }
+        }
       }
+
+      strokeLengths.add(strokeLen);
+      final chordDx = s.points.last.x - s.points.first.x;
+      final chordDy = s.points.last.y - s.points.first.y;
+      final chord = math.sqrt(chordDx * chordDx + chordDy * chordDy);
+      straightness.add(_clamp01(_safeDiv(chord, strokeLen + _eps)));
     }
 
-    final bboxW = (maxX - minX).clamp(0.0, kLogicalSize) / kLogicalSize;
-    final bboxH = (maxY - minY).clamp(0.0, kLogicalSize) / kLogicalSize;
-    final aspect = bboxH > 0 ? bboxW / bboxH : 1.0;
-    final dt = dirTotal > 0 ? dirTotal.toDouble() : 1.0;
+    final bboxWRaw = (maxX - minX).clamp(0.0, kLogicalSize);
+    final bboxHRaw = (maxY - minY).clamp(0.0, kLogicalSize);
+    final bboxAreaRaw = bboxWRaw * bboxHRaw;
+    final bboxW = _normByCanvas(bboxWRaw);
+    final bboxH = _normByCanvas(bboxHRaw);
+    final bboxArea = _clamp01(bboxAreaRaw / (kLogicalSize * kLogicalSize));
+    final avgPoints = _safeDiv(totalPoints.toDouble(), nonEmpty.length.toDouble());
+    final avgSegLength = _safeDiv(totalLength, segCount.toDouble());
+    final aspectNorm = _clamp01(_safeDiv(bboxWRaw, bboxHRaw + _eps) / 4.0);
+    final centerX = _normByCanvas((minX + maxX) * 0.5);
+    final centerY = _normByCanvas((minY + maxY) * 0.5);
+    final startMeanX = _normByCanvas(
+      _safeDiv(startPts.fold<double>(0.0, (s, p) => s + p.x), startPts.length.toDouble()),
+    );
+    final startMeanY = _normByCanvas(
+      _safeDiv(startPts.fold<double>(0.0, (s, p) => s + p.y), startPts.length.toDouble()),
+    );
+    final endMeanX = _normByCanvas(
+      _safeDiv(endPts.fold<double>(0.0, (s, p) => s + p.x), endPts.length.toDouble()),
+    );
+    final endMeanY = _normByCanvas(
+      _safeDiv(endPts.fold<double>(0.0, (s, p) => s + p.y), endPts.length.toDouble()),
+    );
+    final compactness = _clamp01(
+      _safeDiv(totalLength, 2.0 * (bboxWRaw + bboxHRaw) + _eps) / 4.0,
+    );
 
-    return StrokeFeatures([
-      strokes.length / 20.0,
-      totalPoints / 500.0,
-      (totalPoints / strokes.length) / 50.0,
+    final totalDir = dirHist.fold<double>(0.0, (a, b) => a + b);
+    final dirNorm = dirHist.map((v) => _safeDiv(v, totalDir)).map(_clamp01).toList();
+    final se = dirHist[1];
+    final nw = dirHist[5];
+    final ne = dirHist[7];
+    final sw = dirHist[3];
+    final gridNorm = grid.map((v) => _safeDiv(v, totalPoints.toDouble())).map(_clamp01).toList();
+
+    final minLen = strokeLengths.isEmpty ? 0.0 : strokeLengths.reduce(math.min);
+    final maxLen = strokeLengths.isEmpty ? 0.0 : strokeLengths.reduce(math.max);
+    final meanLen = strokeLengths.isEmpty
+        ? 0.0
+        : strokeLengths.fold<double>(0.0, (a, b) => a + b) / strokeLengths.length;
+    final stdLen = _std(strokeLengths, meanLen);
+
+    final minPts = strokePointCounts.isEmpty ? 0.0 : strokePointCounts.reduce(math.min);
+    final maxPts = strokePointCounts.isEmpty ? 0.0 : strokePointCounts.reduce(math.max);
+    final meanPts = strokePointCounts.isEmpty
+        ? 0.0
+        : strokePointCounts.fold<double>(0.0, (a, b) => a + b) /
+            strokePointCounts.length;
+    final stdPts = _std(strokePointCounts, meanPts);
+
+    final first = nonEmpty.first;
+    final last = nonEmpty.last;
+    final turnMean = absTurns.isEmpty
+        ? 0.0
+        : absTurns.fold<double>(0.0, (a, b) => a + b) / absTurns.length;
+    final turnStd = _std(absTurns, turnMean);
+    final straightMean = straightness.isEmpty
+        ? 0.0
+        : straightness.fold<double>(0.0, (a, b) => a + b) / straightness.length;
+
+    final features = <double>[
+      // A. Global stats (8)
+      _normCount(nonEmpty.length, 20),
+      _normCount(totalPoints, 500),
+      _clamp01(avgPoints / 50.0),
+      _clamp01(totalLength / (kLogicalSize * 20.0)),
+      _clamp01(avgSegLength / (kLogicalSize * 0.25)),
       bboxW,
       bboxH,
-      aspect.clamp(0.0, 3.0) / 3.0,
-      bboxW * bboxH,
-      dirR / dt,
-      dirD / dt,
-      dirL / dt,
-      dirU / dt,
-      (totalLength / totalPoints.clamp(1, 99999)) / kLogicalSize,
-    ]);
+      bboxArea,
+      // B. Shape & position (8)
+      aspectNorm,
+      centerX,
+      centerY,
+      startMeanX,
+      startMeanY,
+      endMeanX,
+      endMeanY,
+      compactness,
+      // C. 8-bin direction histogram (8)
+      ...dirNorm,
+      // D. Direction balance (4)
+      _balance01(right, left),
+      _balance01(down, up),
+      _balance01(se, nw),
+      _balance01(ne, sw),
+      // E. Spatial density grid 4x4 (16)
+      ...gridNorm,
+      // F. Stroke length / point stats (8)
+      _clamp01(minLen / (kLogicalSize * 2.0)),
+      _clamp01(maxLen / (kLogicalSize * 4.0)),
+      _clamp01(meanLen / (kLogicalSize * 3.0)),
+      _clamp01(stdLen / (kLogicalSize * 2.0)),
+      _clamp01(minPts / 100.0),
+      _clamp01(maxPts / 250.0),
+      _clamp01(meanPts / 120.0),
+      _clamp01(stdPts / 80.0),
+      // G. Order anchors (8)
+      _normByCanvas(first.points.first.x),
+      _normByCanvas(first.points.first.y),
+      _normByCanvas(first.points.last.x),
+      _normByCanvas(first.points.last.y),
+      _normByCanvas(last.points.first.x),
+      _normByCanvas(last.points.first.y),
+      _normByCanvas(last.points.last.x),
+      _normByCanvas(last.points.last.y),
+      // H. Turning / geometry (4)
+      _clamp01(turnMean / math.pi),
+      _clamp01(turnStd / math.pi),
+      _clamp01(_safeDiv((nonEmpty.length - 1).toDouble(), totalPoints.toDouble())),
+      _clamp01(straightMean),
+    ];
+
+    if (features.length < dimension) {
+      features.addAll(List.filled(dimension - features.length, 0.0));
+    }
+    return StrokeFeatures(features.take(dimension).toList());
   }
 
   double cosineSimilarity(StrokeFeatures other) {
@@ -346,7 +537,10 @@ class StrokeFeatures {
   factory StrokeFeatures.fromJson(String json) {
     final list =
         (jsonDecode(json) as List).map((e) => (e as num).toDouble()).toList();
-    return StrokeFeatures(list);
+    if (list.length < dimension) {
+      list.addAll(List.filled(dimension - list.length, 0.0));
+    }
+    return StrokeFeatures(list.take(dimension).toList());
   }
 }
 
@@ -675,6 +869,10 @@ class DbService {
           await db.execute(sql);
         } catch (_) {}
       }
+    }
+    if (old < 5) {
+      await db.execute('DELETE FROM $kTableEmbeddings');
+      await db.execute('DELETE FROM $kTablePrototypes');
     }
     await _createTables(db);
   }
@@ -1098,17 +1296,9 @@ class EmbeddingEncoder {
     }
   }
 
-  /// Rule-based fallback: tile 12-dim StrokeFeatures up to [dim] dimensions.
+  /// Local handcrafted embedding (64-dim StrokeFeatures).
   static List<double> fallback(List<StrokeData> strokes) {
-    final base = StrokeFeatures.fromStrokes(strokes).values;
-    final out = <double>[];
-    while (out.length < dim) {
-      for (final v in base) {
-        if (out.length >= dim) break;
-        out.add(v);
-      }
-    }
-    return out;
+    return StrokeFeatures.fromStrokes(strokes).values;
   }
 }
 
@@ -1686,6 +1876,7 @@ class LocalLearningService {
     final ocrMatched = ocrRaw.contains(vocabulary) ||
         ocrRaw.any((r) => r.contains(vocabulary));
     try {
+      final featureJson = StrokeFeatures.fromStrokes(strokes).toJson();
       await DbService.saveSample(
         vocabulary: vocabulary,
         strokeJson: StrokeSerializer.toJson(strokes),
@@ -1694,7 +1885,7 @@ class LocalLearningService {
         strokeWidth: strokeWidth,
         ocrRaw: ocrRaw,
         ocrMatched: ocrMatched,
-        featureJson: null,
+        featureJson: featureJson,
       );
     } catch (_) {}
 
@@ -2121,9 +2312,7 @@ class AppState extends ChangeNotifier {
       );
 
       // Encode embedding (model or fallback)
-      final tflEmb = await EmbeddingEncoder.encode(pngBytes);
-      final isFallback = tflEmb == null;
-      final embedding = tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+      final embedding = EmbeddingEncoder.fallback(_canvas.strokes);
 
       // Save prototype/embedding — same flow as recognize()
       final checkResult = await LocalLearningService.onCheck(
@@ -2132,7 +2321,7 @@ class AppState extends ChangeNotifier {
         strokeWidth: _strokeWidth,
         strokes: _canvas.strokes,
         embedding: embedding,
-        isFallback: isFallback,
+        isFallback: true,
       );
 
       if (checkResult.isDbError) {
@@ -2192,12 +2381,7 @@ class AppState extends ChangeNotifier {
       if (_canvas.strokes.isEmpty) return;
       final protos = await DbService.getAllPrototypes();
       if (protos.isNotEmpty) {
-        final pngBytes = await CanvasRenderService.renderPngBytes(
-          _canvas.strokes,
-          strokeWidth: _strokeWidth,
-        );
-        final tflEmb = await EmbeddingEncoder.encode(pngBytes);
-        final embedding = tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+        final embedding = StrokeFeatures.fromStrokes(_canvas.strokes).values;
         final candidates = <ProtoMatchCandidate>[];
         for (final row in protos) {
           try {
@@ -2217,9 +2401,7 @@ class AppState extends ChangeNotifier {
         _realtimeSource = 'proto';
       } else {
         _realtimeCandidates = const [];
-        _realtimeSource = EmbeddingEncoder.hasImportedModel()
-            ? 'model_no_prototypes'
-            : 'none';
+        _realtimeSource = 'none';
       }
     } catch (e) {
       debugPrint('[_runRealtimeCompare] $e');
@@ -2245,15 +2427,8 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final pngBytes = await CanvasRenderService.renderPngBytes(
-        _canvas.strokes,
-        strokeWidth: _strokeWidth,
-      );
-
-      final List<double>? tflEmb = await EmbeddingEncoder.encode(pngBytes);
-      final bool isFallback = tflEmb == null;
       final List<double> embedding =
-          tflEmb ?? EmbeddingEncoder.fallback(_canvas.strokes);
+          StrokeFeatures.fromStrokes(_canvas.strokes).values;
 
       // ── OCR BYPASSED — testing model/prototype only ───────────────────────
       // All OCR / VisionOcrService calls removed for this mode.
@@ -2300,7 +2475,7 @@ class AppState extends ChangeNotifier {
           strokeWidth: _strokeWidth,
           strokes: _canvas.strokes,
           embedding: embedding,
-          isFallback: isFallback,
+          isFallback: true,
         );
         _similarityResult = checkResult.similarityResult;
         _pendingToast = ToastMessage(
