@@ -886,7 +886,6 @@ class _MobileInfoBar extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Row 1: char + pinyin/tags + search button
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -927,7 +926,6 @@ class _MobileInfoBar extends StatelessWidget {
                 _SearchBtn(char: entry.vocabulary),
               ],
             ),
-            // Row 2: Samples + pending chips
             const SizedBox(height: 5),
             Row(
               children: [
@@ -954,11 +952,6 @@ class _MobileInfoBar extends StatelessWidget {
     if (state.realtimeCandidates.isNotEmpty) {
       final top = state.realtimeCandidates.first;
       final pct = (top.score * 100).round();
-      final topColor = pct >= 80
-          ? kSuccess
-          : pct >= 60
-              ? kAccent
-              : kTextSecondary;
       return Container(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
         child: Row(
@@ -966,8 +959,8 @@ class _MobileInfoBar extends StatelessWidget {
           children: [
             Text(
               top.vocabulary,
-              style: TextStyle(
-                color: topColor,
+              style: const TextStyle(
+                color: kAccent,
                 fontSize: 36,
                 fontWeight: FontWeight.w200,
                 height: 1,
@@ -976,8 +969,8 @@ class _MobileInfoBar extends StatelessWidget {
             const SizedBox(width: 8),
             Text(
               '$pct%',
-              style: TextStyle(
-                color: topColor,
+              style: const TextStyle(
+                color: kTextSecondary,
                 fontSize: 11,
                 letterSpacing: 0.3,
               ),
@@ -1021,11 +1014,6 @@ class _RealtimeTopBar extends StatelessWidget {
 
     final top = candidates.first;
     final pct = (top.score * 100).round();
-    final topColor = pct >= 80
-        ? kSuccess
-        : pct >= 60
-            ? kAccent
-            : kTextSecondary;
 
     return Container(
       width: double.infinity,
@@ -1037,30 +1025,7 @@ class _RealtimeTopBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            // Top match nổi bật
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                  color: topColor.withOpacity(0.08),
-                  border: Border.all(color: topColor.withOpacity(0.5)),
-                  borderRadius: BorderRadius.circular(3)),
-              child: RichText(
-                  text: TextSpan(children: [
-                TextSpan(
-                    text: top.vocabulary,
-                    style: TextStyle(
-                        color: topColor,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w200,
-                        height: 1)),
-                TextSpan(
-                    text: ' $pct%',
-                    style: TextStyle(
-                        color: topColor, fontSize: 9, letterSpacing: 0.3)),
-              ])),
-            ),
-            const SizedBox(width: 8),
-            // Các candidates còn lại
+            // Các candidates còn lại — nay ở vị trí đầu tiên
             ...candidates.skip(1).map((c) {
               final p = (c.score * 100).round();
               return Padding(
@@ -1069,27 +1034,62 @@ class _RealtimeTopBar extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                   decoration: BoxDecoration(
-                      border: Border.all(color: kBorder),
-                      borderRadius: BorderRadius.circular(3)),
+                    border: Border.all(color: kBorder),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
                   child: RichText(
-                      text: TextSpan(children: [
-                    TextSpan(
+                    text: TextSpan(children: [
+                      TextSpan(
                         text: c.vocabulary,
                         style: const TextStyle(
-                            color: kTextSecondary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w200,
-                            height: 1)),
-                    TextSpan(
+                          color: kTextSecondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w200,
+                          height: 1,
+                        ),
+                      ),
+                      TextSpan(
                         text: ' $p%',
                         style: const TextStyle(
-                            color: kTextMuted,
-                            fontSize: 9,
-                            letterSpacing: 0.3)),
-                  ])),
+                          color: kTextMuted,
+                          fontSize: 9,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ]),
+                  ),
                 ),
               );
             }),
+            // Top match — nay ở vị trí cuối, dạng chip nhỏ đồng bộ
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                border: Border.all(color: kAccent.withOpacity(0.4)),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: RichText(
+                text: TextSpan(children: [
+                  TextSpan(
+                    text: top.vocabulary,
+                    style: const TextStyle(
+                      color: kAccent,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w200,
+                      height: 1,
+                    ),
+                  ),
+                  TextSpan(
+                    text: ' $pct%',
+                    style: const TextStyle(
+                      color: kTextSecondary,
+                      fontSize: 9,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
           ],
         ),
       ),
@@ -1180,26 +1180,29 @@ class _BestMatchGlyph extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pct = (candidate.score * 100).round();
-    final scoreColor = pct >= 80
-        ? kSuccess
-        : pct >= 60
-            ? kAccent
-            : kTextSecondary;
     return Row(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.baseline,
       textBaseline: TextBaseline.alphabetic,
       children: [
-        Text(candidate.vocabulary,
-            style: const TextStyle(
-                color: kAccent,
-                fontSize: 26,
-                fontWeight: FontWeight.w200,
-                height: 1)),
+        Text(
+          candidate.vocabulary,
+          style: const TextStyle(
+            color: kAccent,
+            fontSize: 26,
+            fontWeight: FontWeight.w200,
+            height: 1,
+          ),
+        ),
         const SizedBox(width: 4),
-        Text('$pct%',
-            style:
-                TextStyle(color: scoreColor, fontSize: 9, letterSpacing: 0.4)),
+        Text(
+          '$pct%',
+          style: const TextStyle(
+            color: kTextSecondary,
+            fontSize: 9,
+            letterSpacing: 0.4,
+          ),
+        ),
       ],
     );
   }
@@ -1213,30 +1216,38 @@ class _CandidateChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pct = (candidate.score * 100).round();
-    final borderColor = isSimilar ? kAccentDim : kBorder.withOpacity(0.5);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-          border: Border.all(color: borderColor),
-          borderRadius: BorderRadius.circular(3)),
+        border: Border.all(
+          color: isSimilar ? kAccent.withOpacity(0.35) : kBorder,
+        ),
+        borderRadius: BorderRadius.circular(3),
+      ),
       child: RichText(
-          text: TextSpan(children: [
-        TextSpan(
+        text: TextSpan(children: [
+          TextSpan(
             text: candidate.vocabulary,
             style: TextStyle(
-                color: isSimilar ? kAccent : kTextSecondary,
-                fontSize: 14,
-                fontWeight: FontWeight.w200,
-                height: 1)),
-        TextSpan(
+              color: isSimilar ? kAccent : kTextSecondary,
+              fontSize: 14,
+              fontWeight: FontWeight.w200,
+              height: 1,
+            ),
+          ),
+          TextSpan(
             text: ' $pct',
             style: const TextStyle(
-                color: kTextMuted, fontSize: 8, letterSpacing: 0.3)),
-      ])),
+              color: kTextMuted,
+              fontSize: 8,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }
-
 // ── Sample bar (only when pinned) ─────────────────────────────────────────────
 
 class _SampleBar extends StatelessWidget {
