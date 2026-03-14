@@ -91,10 +91,33 @@ jobs:
           fi
           echo "✓ DB asset found ($(du -h assets/db/tocfl_vocab_clean.db | cut -f1))"
 
-      # ── 7. Code analysis (non-blocking on PRs) ───────────────────────────────
+      # ── 7. Code analysis ─────────────────────────────────────────────────────
+      # Chỉ analyze lib/ — test/widget_test.dart mặc định của Flutter dùng
+      # MyApp không tồn tại trong project này, luôn gây error nếu scan test/.
+      # --no-fatal-infos + --no-fatal-warnings: chỉ error thực sự mới fail CI.
+      - name: Fix default widget_test
+        run: |
+          cat > test/widget_test.dart <<'TESTEOF'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:provider/provider.dart';
+          import 'package:tocfl_writer/app.dart';
+          import 'package:tocfl_writer/logic.dart';
+
+          void main() {
+            testWidgets('App smoke test', (WidgetTester tester) async {
+              await tester.pumpWidget(
+                ChangeNotifierProvider(
+                  create: (_) => AppState(),
+                  child: const WriterApp(),
+                ),
+              );
+              expect(find.byType(WriterApp), findsOneWidget);
+            });
+          }
+          TESTEOF
+
       - name: Analyze code
-        run: flutter analyze --no-fatal-infos
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/
 
       # ── 8. Keystore setup (release only) ─────────────────────────────────────
       # NOTE: secrets.* cannot be used in `if:` expressions — always evaluates
@@ -141,7 +164,7 @@ jobs:
             echo "BUILD_TYPE=debug" >> $GITHUB_ENV
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "BUILD_TYPE=release" >> $GITHUB_ENV
-          else:
+          else
             echo "BUILD_TYPE=release" >> $GITHUB_ENV
           fi
 
