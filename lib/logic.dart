@@ -748,6 +748,15 @@ class DbService {
     return rows.map(VocabEntry.fromMap).toList();
   }
 
+  static Future<VocabEntry?> findExactByVocabulary(String vocabulary) async {
+    final rows = await db.rawQuery(
+      'SELECT * FROM $kTable WHERE vocabulary = ? LIMIT 1',
+      [vocabulary],
+    );
+    if (rows.isEmpty) return null;
+    return VocabEntry.fromMap(rows.first);
+  }
+
   // ── Practice count ────────────────────────────────────────────────────────
 
   static Future<void> incrementPracticeCount(String vocabulary) async {}

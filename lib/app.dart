@@ -837,35 +837,46 @@ class _EmbeddingToastState extends State<_EmbeddingToast>
 
 class _Body extends StatelessWidget {
   const _Body();
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (ctx, c) {
       final isWide = c.maxWidth > 600;
+
       if (isWide) {
-        return Row(children: [
-          Expanded(
-            flex: 5,
-            child: Column(children: [
-              const _TopPanel(),
-              const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-              const Expanded(child: _DrawCanvas()),
-              const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-              const _BottomBar(),
-            ]),
-          ),
-          const SizedBox(width: 1, child: ColoredBox(color: kBorder)),
-          Expanded(flex: 4, child: _InfoArea()),
-        ]);
+        return Row(
+          children: [
+            Expanded(
+              flex: 5,
+              child: Column(
+                children: [
+                  const _TopPanel(),
+                  const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+                  const _MobileInfoBar(),
+                  const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+                  const Expanded(child: _DrawCanvas()),
+                  const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+                  const _BottomBar(),
+                ],
+              ),
+            ),
+            const SizedBox(width: 1, child: ColoredBox(color: kBorder)),
+            Expanded(flex: 4, child: _InfoArea()),
+          ],
+        );
       }
-      return Column(children: [
-        const _TopPanel(),
-        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const Expanded(child: _DrawCanvas()),
-        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const _BottomBar(),
-        const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-        const _MobileInfoBar(),
-      ]);
+
+      return Column(
+        children: [
+          const _TopPanel(),
+          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+          const _MobileInfoBar(),
+          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+          const Expanded(child: _DrawCanvas()),
+          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
+          const _BottomBar(),
+        ],
+      );
     });
   }
 }
@@ -881,60 +892,61 @@ class _MobileInfoBar extends StatelessWidget {
     if (state.pinnedEntry != null) {
       final entry = state.pinnedEntry!;
       return Container(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
                   entry.vocabulary,
                   style: const TextStyle(
                     color: kAccent,
-                    fontSize: 36,
+                    fontSize: 40,
                     fontWeight: FontWeight.w200,
                     height: 1,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (entry.pinyin != null)
-                        Text(
-                          entry.pinyin!,
-                          style: const TextStyle(
-                            color: kTextPrimary,
-                            fontSize: 13,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                      const SizedBox(height: 3),
-                      Wrap(spacing: 4, runSpacing: 2, children: [
-                        if (entry.levelCode != null) _Tag(entry.levelCode!),
-                        if (entry.context != null) _Tag(entry.context!),
-                        if (entry.partOfSpeech != null)
-                          _Tag(entry.partOfSpeech!),
-                      ]),
-                    ],
-                  ),
+                const SizedBox(width: 8),
+                FutureBuilder<int>(
+                  future: DbService.getEmbeddingCount(entry.vocabulary),
+                  builder: (ctx, snap) {
+                    final emb = snap.data ?? 0;
+                    return Text(
+                      'Emb $emb',
+                      style: TextStyle(
+                        color: emb > 0 ? kTextSecondary : kTextMuted,
+                        fontSize: 11,
+                        letterSpacing: 0.3,
+                      ),
+                    );
+                  },
                 ),
+                const Spacer(),
                 _SearchBtn(char: entry.vocabulary),
               ],
             ),
-            const SizedBox(height: 5),
-            Row(
+            const SizedBox(height: 6),
+            if (entry.pinyin != null && entry.pinyin!.trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _MiniChip(entry.pinyin!),
+              ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
               children: [
+                if (entry.levelCode != null) _MiniChip(entry.levelCode!),
+                if (entry.context != null) _MiniChip(entry.context!),
+                if (entry.partOfSpeech != null) _MiniChip(entry.partOfSpeech!),
                 _StatChip(
                   label: 'Samples',
                   value: '${state.localSampleCountForPinned}',
                   highlight: state.localSampleCountForPinned > 0,
                 ),
-                const SizedBox(width: 6),
                 if (state.pendingUploadCount > 0)
                   _StatChip(
                     label: 'pending',
@@ -952,37 +964,73 @@ class _MobileInfoBar extends StatelessWidget {
     if (state.realtimeCandidates.isNotEmpty) {
       final top = state.realtimeCandidates.first;
       final pct = (top.score * 100).round();
-      return Container(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Text(
-              top.vocabulary,
-              style: const TextStyle(
-                color: kAccent,
-                fontSize: 36,
-                fontWeight: FontWeight.w200,
-                height: 1,
-              ),
+
+      return FutureBuilder<VocabEntry?>(
+        future: DbService.findExactByVocabulary(top.vocabulary),
+        builder: (ctx, snap) {
+          final entry = snap.data;
+
+          return Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      top.vocabulary,
+                      style: const TextStyle(
+                        color: kAccent,
+                        fontSize: 40,
+                        fontWeight: FontWeight.w200,
+                        height: 1,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '$pct%',
+                      style: const TextStyle(
+                        color: kTextSecondary,
+                        fontSize: 11,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const Spacer(),
+                    _SearchBtn(char: top.vocabulary),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                if (entry?.pinyin != null && entry!.pinyin!.trim().isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _MiniChip(entry.pinyin!),
+                  ),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    if (entry?.levelCode != null) _MiniChip(entry!.levelCode!),
+                    if (entry?.context != null) _MiniChip(entry!.context!),
+                    if (entry?.partOfSpeech != null)
+                      _MiniChip(entry!.partOfSpeech!),
+                    FutureBuilder<int>(
+                      future: DbService.getEmbeddingCount(top.vocabulary),
+                      builder: (ctx, embSnap) {
+                        final emb = embSnap.data ?? 0;
+                        return _MiniChip('Emb $emb');
+                      },
+                    ),
+                  ],
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            Text(
-              '$pct%',
-              style: const TextStyle(
-                color: kTextSecondary,
-                fontSize: 11,
-                letterSpacing: 0.3,
-              ),
-            ),
-            const SizedBox(width: 12),
-            _SearchBtn(char: top.vocabulary),
-          ],
-        ),
+          );
+        },
       );
     }
 
-    // ── Empty ─────────────────────────────────────────────────────────────
     return const SizedBox.shrink();
   }
 }
@@ -997,8 +1045,6 @@ class _TopPanel extends StatelessWidget {
           const _SearchBar(),
           const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
           _CanvasControls(),
-          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-          const _RealtimeTopBar(), // ← thêm dòng này
         ],
       );
 }
@@ -1104,7 +1150,7 @@ class _BottomBar extends StatelessWidget {
   Widget build(BuildContext context) => const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // _RealtimePredictionPanel() ← xóa dòng này
+          _RealtimePredictionPanel(),
           _SampleBar(),
         ],
       );
