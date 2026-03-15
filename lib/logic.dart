@@ -1165,7 +1165,7 @@ class DbService {
 // ── Embedding Encoder ─────────────────────────────────────────────────────────
 
 class EmbeddingEncoder {
-  static const int dim = 128;
+  static const int dim = 64;
 
   // ── Imported model metadata (populated by ModelImportService) ─────────────
   static String? _localModelPath;
@@ -1838,6 +1838,7 @@ class LocalLearningService {
     required double strokeWidth,
     required List<StrokeData> strokes,
     required List<double> embedding,
+    required bool usedFallback,
   }) async {
     if (vocabulary.isEmpty) {
       return CheckResult(
@@ -1856,7 +1857,7 @@ class LocalLearningService {
     final saveResult = await PrototypeService.saveAndUpdate(
       vocabulary: vocabulary,
       embedding: embedding,
-      isFallback: true,
+      isFallback: usedFallback,
     );
 
     if (saveResult.status == SaveEmbeddingStatus.dbError) {
@@ -1879,11 +1880,13 @@ class LocalLearningService {
         strokeWidth: strokeWidth,
         ocrRaw: ocrRaw,
         ocrMatched: ocrMatched,
-        featureJson: StrokeFeatures(embedding).toJson(),
+        featureJson: jsonEncode(embedding),
       );
     } catch (_) {}
 
-    const checkSaveStatus = CheckSaveStatus.savedFallback;
+    final checkSaveStatus = usedFallback
+        ? CheckSaveStatus.savedFallback
+        : CheckSaveStatus.savedModel;
 
     return CheckResult(
       saveStatus: checkSaveStatus,
@@ -2059,7 +2062,7 @@ class AppState extends ChangeNotifier {
   CanvasData get canvas => _canvas;
   RecResult? get result => _result;
   double get strokeWidth => _strokeWidth;
-  bool get canCheck => _canvas.strokes.isNotEmpty && !_busy;
+  bool get canCheck => _allCurrentStrokes().isNotEmpty && !_busy;
   String get searchQuery => _searchQuery;
   List<VocabEntry> get searchSuggestions => _searchSuggestions;
   VocabEntry? get pinnedEntry => _pinnedEntry;
@@ -2078,6 +2081,29 @@ class AppState extends ChangeNotifier {
   bool get showRealtimeChips => _showRealtimeChips;
   Color _accentColor = const Color(0xFFE8D5B0);
   Color get accentColor => _accentColor;
+
+  Future<({List<double> embedding, bool usedFallback, Uint8List? pngBytes})>
+      _resolveEmbedding(List<StrokeData> strokes) async {
+    Uint8List? pngBytes;
+
+    try {
+      pngBytes = await CanvasRenderService.renderPngBytes(
+        strokes,
+        strokeWidth: _strokeWidth,
+      );
+
+      final modelEmb = await EmbeddingEncoder.encode(pngBytes);
+      if (modelEmb != null && modelEmb.length == EmbeddingEncoder.dim) {
+        return (embedding: modelEmb, usedFallback: false, pngBytes: pngBytes);
+      }
+    } catch (_) {}
+
+    return (
+      embedding: EmbeddingEncoder.fallback(strokes),
+      usedFallback: true,
+      pngBytes: pngBytes,
+    );
+  }
 
   void setAccentColor(Color c) {
     _accentColor = c;
@@ -2160,6 +2186,11 @@ class AppState extends ChangeNotifier {
     _settings = s;
     await SettingsService.save(s);
     notifyListeners();
+  }
+
+  List<StrokeData> _allCurrentStrokes() {
+    if (_canvas.active == null) return _canvas.strokes;
+    return [..._canvas.strokes, _canvas.active!];
   }
 
   // ── Canvas ────────────────────────────────────────────────────────────────
@@ -2260,15 +2291,17 @@ class AppState extends ChangeNotifier {
 
   Future<bool> saveSample() async {
     if (_pinnedEntry == null) return false;
-    if (_canvas.strokes.isEmpty) return false;
+
+    final strokes = _allCurrentStrokes();
+    if (strokes.isEmpty) return false;
 
     try {
       final pngBytes = await CanvasRenderService.renderPngBytes(
-        _canvas.strokes,
+        strokes,
         strokeWidth: _strokeWidth,
       );
       final pngBase64 = base64Encode(pngBytes);
-      final strokeJson = StrokeSerializer.toJson(_canvas.strokes);
+      final strokeJson = StrokeSerializer.toJson(strokes);
 
       await DbService.saveExportSample(
         vocabulary: _pinnedEntry!.vocabulary,
@@ -2292,27 +2325,32 @@ class AppState extends ChangeNotifier {
 
   Future<bool> saveAndClearPinned() async {
     if (_pinnedEntry == null) return false;
-    if (_canvas.strokes.isEmpty) return false;
+    final strokes = _allCurrentStrokes();
+    if (strokes.isEmpty) return false;
     if (_busy) return false;
 
     _busy = true;
     notifyListeners();
 
     try {
-      final pngBytes = await CanvasRenderService.renderPngBytes(
-        _canvas.strokes,
-        strokeWidth: _strokeWidth,
-      );
+      final resolved = await _resolveEmbedding(strokes);
 
-      final embedding = StrokeFeatures.fromStrokes(_canvas.strokes).values;
+      final pngBytes = resolved.pngBytes ??
+          await CanvasRenderService.renderPngBytes(
+            strokes,
+            strokeWidth: _strokeWidth,
+          );
+
+      final embedding = resolved.embedding;
 
       // Save prototype/embedding — same flow as recognize()
       final checkResult = await LocalLearningService.onCheck(
         vocabulary: _pinnedEntry!.vocabulary,
         ocrRaw: const [],
         strokeWidth: _strokeWidth,
-        strokes: _canvas.strokes,
+        strokes: strokes,
         embedding: embedding,
+        usedFallback: resolved.usedFallback,
       );
 
       if (checkResult.isDbError) {
@@ -2324,7 +2362,7 @@ class AppState extends ChangeNotifier {
 
       // Save export sample (PNG for dataset)
       final pngBase64 = base64Encode(pngBytes);
-      final strokeJson = StrokeSerializer.toJson(_canvas.strokes);
+      final strokeJson = StrokeSerializer.toJson(strokes);
       await DbService.saveExportSample(
         vocabulary: _pinnedEntry!.vocabulary,
         strokeJson: strokeJson,
@@ -2369,10 +2407,13 @@ class AppState extends ChangeNotifier {
     _realtimePending = false;
     _realtimeBusy = true;
     try {
-      if (_canvas.strokes.isEmpty) return;
+      final strokes = _allCurrentStrokes();
+      if (strokes.isEmpty) return;
+
       final protos = await DbService.getAllPrototypes();
       if (protos.isNotEmpty) {
-        final embedding = StrokeFeatures.fromStrokes(_canvas.strokes).values;
+        final resolved = await _resolveEmbedding(strokes);
+        final embedding = resolved.embedding;
         final candidates = <ProtoMatchCandidate>[];
         for (final row in protos) {
           try {
@@ -2411,7 +2452,8 @@ class AppState extends ChangeNotifier {
   // ── Recognize (OCR bypassed — proto/model only) ───────────────────────────
 
   Future<void> recognize() async {
-    if (_busy || _canvas.strokes.isEmpty) return;
+    final strokes = _allCurrentStrokes();
+    if (_busy || strokes.isEmpty) return;
 
     _busy = true;
     _result = null;
@@ -2420,8 +2462,8 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final List<double> embedding =
-          StrokeFeatures.fromStrokes(_canvas.strokes).values;
+      final resolved = await _resolveEmbedding(strokes);
+      final embedding = resolved.embedding;
 
       // ── OCR BYPASSED — testing model/prototype only ───────────────────────
       // All OCR / VisionOcrService calls removed for this mode.
@@ -2466,8 +2508,9 @@ class AppState extends ChangeNotifier {
           vocabulary: _pinnedEntry!.vocabulary,
           ocrRaw: const [],
           strokeWidth: _strokeWidth,
-          strokes: _canvas.strokes,
+          strokes: strokes,
           embedding: embedding,
+          usedFallback: resolved.usedFallback,
         );
         _similarityResult = checkResult.similarityResult;
         _pendingToast = ToastMessage(
