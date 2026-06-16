@@ -5,9 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logic.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:file_picker/file_picker.dart';
-import 'dart:io';
 
 const kBg = Color(0xFF0A0A0A);
 const kSurface = Color(0xFF141414);
@@ -15,8 +12,8 @@ const kBorder = Color(0xFF242424);
 const kAccent = Color(0xFFE8D5B0);
 const kAccentDim = Color(0x44E8D5B0);
 const kTextPrimary = Color(0xFFEEE8DC);
-const kTextSecondary = Color(0xFF888070);
-const kTextMuted = Color(0xFF444038);
+const kTextSecondary = Color(0xFFB0A898);
+const kTextMuted = Color(0xFF666058);
 const kSuccess = Color(0xFF6FCF6F);
 const kError = Color(0xFFCF6F6F);
 
@@ -46,46 +43,12 @@ class _MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<_MainScreen> {
-  OverlayEntry? _toastEntry;
-
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().init();
-      context.read<AppState>().addListener(_onStateChange);
     });
-  }
-
-  @override
-  void dispose() {
-    context.read<AppState>().removeListener(_onStateChange);
-    _toastEntry?.remove();
-    super.dispose();
-  }
-
-  void _onStateChange() {
-    final state = context.read<AppState>();
-    final toast = state.pendingToast;
-    if (toast == null) return;
-    state.consumeToast();
-    _showEmbeddingToast(toast);
-  }
-
-  void _showEmbeddingToast(ToastMessage toast) {
-    _toastEntry?.remove();
-    _toastEntry = null;
-    final entry = OverlayEntry(
-      builder: (_) => _EmbeddingToast(
-        message: toast,
-        onDone: () {
-          _toastEntry?.remove();
-          _toastEntry = null;
-        },
-      ),
-    );
-    _toastEntry = entry;
-    Overlay.of(context).insert(entry);
   }
 
   void _openSettings() {
@@ -151,28 +114,7 @@ class _MainScreenState extends State<_MainScreen> {
                     border: Border.all(color: kBorder),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      const Icon(Icons.settings, color: kTextMuted, size: 16),
-                      if (state.pendingUploadCount > 0)
-                        Positioned(
-                          right: -5,
-                          top: -5,
-                          child: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: const BoxDecoration(
-                              color: kAccent,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Text(
-                              '${state.pendingUploadCount}',
-                              style: const TextStyle(color: kBg, fontSize: 7),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                  child: const Icon(Icons.settings, color: kTextMuted, size: 16),
                 ),
               ),
             ),
@@ -185,727 +127,115 @@ class _MainScreenState extends State<_MainScreen> {
 
 // ── Settings Sheet ────────────────────────────────────────────────────────────
 
-class _SettingsSheet extends StatefulWidget {
+class _SettingsSheet extends StatelessWidget {
   const _SettingsSheet();
-  @override
-  State<_SettingsSheet> createState() => _SettingsSheetState();
-}
-
-class _SettingsSheetState extends State<_SettingsSheet> {
-  late TextEditingController _serverUrlCtrl;
-  late TextEditingController _apiKeyCtrl;
-  late TextEditingController _batchNameCtrl;
-  late TextEditingController _modelImportUrlCtrl;
-  late bool _autoDelete;
-
-  String? _statusMsg;
-  bool _isOk = false;
-  bool _loading = false;
-
-  ExportStatus _exportStatus = ExportStatus.idle;
-  int _exportedCount = 0;
-  String? _exportBatchId;
-
-  ModelImportStatus _importStatus = ModelImportStatus.idle;
-  String? _importedVersion;
-
-  @override
-  void initState() {
-    super.initState();
-    final s = context.read<AppState>().settings;
-    _serverUrlCtrl = TextEditingController(text: s.serverUrl);
-    _apiKeyCtrl = TextEditingController(text: s.apiKey);
-    _batchNameCtrl = TextEditingController(text: s.batchName);
-    _modelImportUrlCtrl = TextEditingController(
-        text: s.modelImportUrl.isNotEmpty ? s.modelImportUrl : s.serverUrl);
-    _autoDelete = s.autoDeleteAfterUpload;
-  }
-
-  @override
-  void dispose() {
-    _serverUrlCtrl.dispose();
-    _apiKeyCtrl.dispose();
-    _batchNameCtrl.dispose();
-    _modelImportUrlCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final appState = context.read<AppState>();
-    final updated = appState.settings.copyWith(
-      serverUrl: _serverUrlCtrl.text.trim(),
-      apiKey: _apiKeyCtrl.text.trim(),
-      batchName: _batchNameCtrl.text.trim(),
-      modelImportUrl: _modelImportUrlCtrl.text.trim(),
-      autoDeleteAfterUpload: _autoDelete,
-    );
-    await appState.updateSettings(updated);
-  }
-
-  Future<void> _exportPrototypes() async {
-    setState(() {
-      _loading = true;
-      _statusMsg = null;
-    });
-    String? tempPath;
-    try {
-      tempPath = await context.read<AppState>().exportPrototypesToTemp();
-      if (tempPath == null) {
-        setState(() {
-          _isOk = false;
-          _statusMsg = 'export failed';
-        });
-        return;
-      }
-      final result = await Share.shareXFiles(
-        [XFile(tempPath)],
-        subject: 'Prototypes backup',
-      );
-      setState(() {
-        _isOk = true;
-        _statusMsg = result.status == ShareResultStatus.dismissed
-            ? 'cancelled'
-            : 'shared successfully';
-      });
-    } catch (e) {
-      setState(() {
-        _isOk = false;
-        _statusMsg = 'export failed: $e';
-      });
-    } finally {
-      if (tempPath != null) {
-        try {
-          File(tempPath).deleteSync();
-        } catch (_) {}
-      }
-      setState(() {
-        _loading = false;
-      });
-    }
-  }
-
-  Future<void> _importPrototypes() async {
-    setState(() {
-      _loading = true;
-      _statusMsg = null;
-    });
-    try {
-      final picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-      );
-      if (picked == null || picked.files.single.path == null) {
-        setState(() {
-          _loading = false;
-          _statusMsg = 'cancelled';
-          _isOk = false;
-        });
-        return;
-      }
-      final result = await context
-          .read<AppState>()
-          .importPrototypesFromFile(picked.files.single.path!);
-      setState(() {
-        _isOk = result?.success ?? false;
-        _statusMsg = result == null
-            ? 'import failed'
-            : result.success
-                ? 'merged ${result.mergedPrototypes} protos · '
-                    'added ${result.addedEmbeddings} embeddings'
-                : 'import failed: ${result.errorMsg}';
-      });
-    } catch (e) {
-      setState(() {
-        _isOk = false;
-        _statusMsg = 'import failed: $e';
-      });
-    } finally {
-      setState(() {
-        _loading = false;
-      });
-    }
-  }
-
-  Future<void> _testConnection() async {
-    await _save();
-    setState(() {
-      _loading = true;
-      _statusMsg = null;
-    });
-    final ok = await DatasetExportService.testConnection(
-      _serverUrlCtrl.text.trim(),
-      _apiKeyCtrl.text.trim(),
-    );
-    setState(() {
-      _loading = false;
-      _isOk = ok;
-      _statusMsg = ok ? 'connected' : 'connection failed';
-    });
-  }
-
-  Future<void> _exportDataset() async {
-    await _save();
-    setState(() {
-      _exportStatus = ExportStatus.exporting;
-      _statusMsg = null;
-    });
-    final result = await DatasetExportService.exportDataset(
-      settings: context.read<AppState>().settings,
-    );
-    setState(() {
-      _exportStatus = result.status;
-      _exportedCount = result.uploadedCount;
-      _exportBatchId = result.batchId;
-      _statusMsg = result.status == ExportStatus.success
-          ? 'uploaded ${result.uploadedCount} samples · ${result.batchId}'
-          : 'export failed: ${result.errorMsg}';
-      _isOk = result.status == ExportStatus.success;
-    });
-    // ignore: use_build_context_synchronously
-    if (mounted) context.read<AppState>().init();
-  }
-
-  Future<void> _importEncoder() async {
-    await _save();
-    setState(() {
-      _importStatus = ModelImportStatus.loading;
-      _statusMsg = null;
-    });
-    final s = context.read<AppState>().settings;
-    final importUrl = _modelImportUrlCtrl.text.trim().isNotEmpty
-        ? _modelImportUrlCtrl.text.trim()
-        : _serverUrlCtrl.text.trim();
-    final result = await ModelImportService.importEncoder(
-      importUrl: importUrl,
-      apiKey: s.apiKey,
-      currentSettings: s,
-    );
-    setState(() {
-      _importStatus = result.status;
-      _importedVersion = result.version;
-      _statusMsg = result.status == ModelImportStatus.success
-          ? 'encoder imported · ${result.version ?? 'unknown'} · ready'
-          : 'import failed: ${result.errorMsg}';
-      _isOk = result.status == ModelImportStatus.success;
-    });
-    if (mounted && result.status == ModelImportStatus.success) {
-      context.read<AppState>().updateSettings(
-            context.read<AppState>().settings.copyWith(
-                  lastImportedModelVersion: result.version,
-                  lastImportedAt: DateTime.now(),
-                ),
-          );
-    }
-  }
-
-  Future<void> _clearLocalSamples() async {
-    await DbService.deleteAllLocalExportSamples();
-    if (mounted) {
-      setState(() {
-        _statusMsg = 'local samples cleared';
-        _isOk = true;
-      });
-      context.read<AppState>().init();
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
-    final s = appState.settings;
-    final modelHasLocal = EmbeddingEncoder.hasImportedModel();
-
     return Padding(
-      padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              const Text('Settings',
-                  style: TextStyle(
-                      color: kTextSecondary, fontSize: 11, letterSpacing: 1.2)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: const Text('Close',
-                    style: TextStyle(
-                        color: kTextMuted, fontSize: 10, letterSpacing: 0.8)),
-              ),
-            ]),
-            const SizedBox(height: 16),
-            Row(children: [
-              const Text('stroke width',
-                  style: TextStyle(
-                      color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    activeTrackColor: kAccent.withOpacity(0.6),
-                    inactiveTrackColor: kBorder,
-                    thumbColor: kAccent,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 6),
-                    trackHeight: 1.5,
-                    overlayShape: SliderComponentShape.noOverlay,
-                  ),
-                  child: Slider(
-                    value: appState.strokeWidth,
-                    min: 4.0,
-                    max: 24.0,
-                    onChanged: (v) => appState.setStrokeWidth(v),
-                  ),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 10),
-            _SettingsField(
-                label: 'server url',
-                controller: _serverUrlCtrl,
-                hint: 'http://localhost:8000'),
-            const SizedBox(height: 10),
-            _SettingsField(
-                label: 'api key',
-                controller: _apiKeyCtrl,
-                hint: 'optional',
-                obscure: true),
-            const SizedBox(height: 10),
-            _SettingsField(
-                label: 'batch name',
-                controller: _batchNameCtrl,
-                hint: 'batch_001'),
-            const SizedBox(height: 10),
-            _SettingsField(
-                label: 'model import url',
-                controller: _modelImportUrlCtrl,
-                hint: 'defaults to server url/import'),
-            const SizedBox(height: 12),
-            Row(children: [
-              const Text('auto delete after upload',
-                  style: TextStyle(
-                      color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => setState(() => _autoDelete = !_autoDelete),
-                child: Container(
-                  width: 36,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: _autoDelete ? kAccentDim : kBorder,
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: AnimatedAlign(
-                    duration: const Duration(milliseconds: 150),
-                    alignment: _autoDelete
-                        ? Alignment.centerRight
-                        : Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2),
-                      child: Container(
-                        width: 14,
-                        height: 14,
-                        decoration: BoxDecoration(
-                          color: _autoDelete ? kAccent : kTextMuted,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 10),
-            Row(children: [
-              const Text('show realtime chips',
-                  style: TextStyle(
-                      color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => context.read<AppState>().setShowRealtimeChips(
-                    !context.read<AppState>().showRealtimeChips),
-                child: Container(
-                  width: 36,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: context.watch<AppState>().showRealtimeChips
-                        ? kAccentDim
-                        : kBorder,
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: AnimatedAlign(
-                    duration: const Duration(milliseconds: 150),
-                    alignment: context.watch<AppState>().showRealtimeChips
-                        ? Alignment.centerRight
-                        : Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2),
-                      child: Container(
-                        width: 14,
-                        height: 14,
-                        decoration: BoxDecoration(
-                          color: context.watch<AppState>().showRealtimeChips
-                              ? kAccent
-                              : kTextMuted,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ]),
-            const SizedBox(height: 12),
-            Text('accent color',
-                style: const TextStyle(
-                    color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              children: [
-                const Color(0xFFE8D5B0),
-                const Color(0xFFFFFFFF),
-                const Color(0xFF6FCF6F),
-                const Color(0xFF7EB8F7),
-                const Color(0xFFCFAA6F),
-                const Color(0xFFCF6FCF),
-                const Color(0xFFCF6F6F),
-              ].map((c) {
-                final isSelected = appState.accentColor == c;
-                return GestureDetector(
-                  onTap: () => context.read<AppState>().setAccentColor(c),
-                  child: Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: c,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: isSelected ? c : kBorder,
-                        width: isSelected ? 2.5 : 1,
-                      ),
-                      boxShadow: isSelected
-                          ? [
-                              BoxShadow(
-                                  color: c.withOpacity(0.6), blurRadius: 6)
-                            ]
-                          : null,
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 16),
-            Wrap(spacing: 6, runSpacing: 4, children: [
-              _InfoChip(
-                  label: 'pending', value: '${appState.pendingUploadCount}'),
-              if (s.lastUploadBatchId != null)
-                _InfoChip(
-                    label: 'last batch',
-                    value: s.lastUploadBatchId!
-                        .substring(0, min(18, s.lastUploadBatchId!.length))),
-              if (s.lastImportedModelVersion != null)
-                _InfoChip(
-                    label: 'model',
-                    value: s.lastImportedModelVersion!,
-                    ok: modelHasLocal),
-              _PrototypeCountChip(),
-            ]),
-            const SizedBox(height: 14),
-            Row(children: [
-              Expanded(
-                  child: _SheetBtn(
-                      label: _loading ? '…' : 'Test connection',
-                      enabled: !_loading,
-                      onTap: _testConnection)),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: _SheetBtn(
-                      label: _exportStatus == ExportStatus.exporting
-                          ? 'Exporting…'
-                          : 'Export dataset',
-                      enabled: _exportStatus != ExportStatus.exporting,
-                      accent: true,
-                      onTap: _exportDataset)),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(
-                  child: _SheetBtn(
-                      label: _importStatus == ModelImportStatus.loading
-                          ? 'Importing…'
-                          : 'Import encoder',
-                      enabled: _importStatus != ModelImportStatus.loading,
-                      onTap: _importEncoder)),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: _SheetBtn(
-                      label: 'Clear local samples',
-                      enabled: true,
-                      onTap: _clearLocalSamples)),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(
-                child: _SheetBtn(
-                  label: _loading ? '…' : 'Export prototypes',
-                  enabled: !_loading,
-                  onTap: _exportPrototypes,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _SheetBtn(
-                  label: _loading ? '…' : 'Import prototypes',
-                  enabled: !_loading,
-                  onTap: _importPrototypes,
-                ),
-              ),
-            ]),
-            const SizedBox(height: 12),
-            if (_statusMsg != null)
-              Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  border: Border.all(
-                      color: _isOk
-                          ? kSuccess.withOpacity(0.4)
-                          : kError.withOpacity(0.4)),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(_statusMsg!,
-                    style: TextStyle(
-                        color: _isOk ? kSuccess : kError,
-                        fontSize: 10,
-                        letterSpacing: 0.4)),
-              ),
-          ],
-        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Text('Settings', style: TextStyle(color: kTextSecondary, fontSize: 11, letterSpacing: 1.2)),
+            const Spacer(),
+            GestureDetector(onTap: () => Navigator.pop(context),
+              child: const Text('Close', style: TextStyle(color: kTextMuted, fontSize: 10, letterSpacing: 0.8))),
+          ]),
+          const SizedBox(height: 16),
+          Row(children: [
+            const Text('stroke width', style: TextStyle(color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
+            Expanded(child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: kAccent.withOpacity(0.6), inactiveTrackColor: kBorder,
+                thumbColor: kAccent, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                trackHeight: 1.5, overlayShape: SliderComponentShape.noOverlay),
+              child: Slider(value: appState.strokeWidth, min: 4.0, max: 24.0, onChanged: (v) => appState.setStrokeWidth(v)),
+            )),
+          ]),
+          const SizedBox(height: 12),
+          const Text('recognition language', style: TextStyle(color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
+          const SizedBox(height: 6),
+          Row(children: [
+            _LangChip(label: '繁體中文', selected: appState.languageCode == 'zh-Hant', onTap: () => appState.setLanguageCode('zh-Hant')),
+            const SizedBox(width: 8),
+            _LangChip(label: '简体中文', selected: appState.languageCode == 'zh-Hans', onTap: () => appState.setLanguageCode('zh-Hans')),
+          ]),
+          const SizedBox(height: 6),
+          Row(children: [
+            Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle,
+              color: appState.modelDownloading ? kAccent : appState.modelReady ? kSuccess : kError)),
+            const SizedBox(width: 6),
+            Text(appState.modelDownloading ? 'Downloading model…' : appState.modelReady ? 'Model ready' : 'Model not available',
+              style: TextStyle(color: appState.modelReady ? kTextSecondary : kError, fontSize: 10, letterSpacing: 0.4)),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            const Text('show realtime chips', style: TextStyle(color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
+            const Spacer(),
+            GestureDetector(
+              onTap: () => context.read<AppState>().setShowRealtimeChips(!context.read<AppState>().showRealtimeChips),
+              child: Container(width: 36, height: 18, decoration: BoxDecoration(
+                color: appState.showRealtimeChips ? kAccentDim : kBorder, borderRadius: BorderRadius.circular(9)),
+                child: AnimatedAlign(duration: const Duration(milliseconds: 150),
+                  alignment: appState.showRealtimeChips ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Padding(padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: Container(width: 14, height: 14, decoration: BoxDecoration(
+                      color: appState.showRealtimeChips ? kAccent : kTextMuted, shape: BoxShape.circle)))))),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            const Text('always show template', style: TextStyle(color: kTextSecondary, fontSize: 10, letterSpacing: 0.5)),
+            const Spacer(),
+            GestureDetector(
+              onTap: () => context.read<AppState>().setAlwaysShowTemplate(!context.read<AppState>().alwaysShowTemplate),
+              child: Container(width: 36, height: 18, decoration: BoxDecoration(
+                color: appState.alwaysShowTemplate ? kAccentDim : kBorder, borderRadius: BorderRadius.circular(9)),
+                child: AnimatedAlign(duration: const Duration(milliseconds: 150),
+                  alignment: appState.alwaysShowTemplate ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Padding(padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: Container(width: 14, height: 14, decoration: BoxDecoration(
+                      color: appState.alwaysShowTemplate ? kAccent : kTextMuted, shape: BoxShape.circle)))))),
+          ]),
+          const SizedBox(height: 12),
+          const Text('accent color', style: TextStyle(color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, children: [
+            const Color(0xFFE8D5B0), const Color(0xFFFFFFFF), const Color(0xFF6FCF6F),
+            const Color(0xFF7EB8F7), const Color(0xFFCFAA6F), const Color(0xFFCF6FCF), const Color(0xFFCF6F6F),
+          ].map((c) {
+            final isSelected = appState.accentColor == c;
+            return GestureDetector(onTap: () => context.read<AppState>().setAccentColor(c),
+              child: Container(width: 24, height: 24, decoration: BoxDecoration(color: c, shape: BoxShape.circle,
+                border: Border.all(color: isSelected ? c : kBorder, width: isSelected ? 2.5 : 1),
+                boxShadow: isSelected ? [BoxShadow(color: c.withOpacity(0.6), blurRadius: 6)] : null)));
+          }).toList()),
+        ]),
       ),
     );
   }
 }
 
-class _PrototypeCountChip extends StatelessWidget {
-  const _PrototypeCountChip();
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: DbService.getAllPrototypes(),
-      builder: (ctx, snap) {
-        final count = snap.data?.length ?? 0;
-        return _InfoChip(
-          label: 'prototypes',
-          value: '$count',
-          ok: count > 0 ? true : false,
-        );
-      },
-    );
-  }
-}
-// ── Settings field ────────────────────────────────────────────────────────────
-
-class _SettingsField extends StatelessWidget {
+class _LangChip extends StatelessWidget {
   final String label;
-  final TextEditingController controller;
-  final String hint;
-  final bool obscure;
-  const _SettingsField(
-      {required this.label,
-      required this.controller,
-      this.hint = '',
-      this.obscure = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: const TextStyle(
-              color: kTextMuted, fontSize: 9, letterSpacing: 0.8)),
-      const SizedBox(height: 4),
-      TextField(
-        controller: controller,
-        obscureText: obscure,
-        style: const TextStyle(color: kTextPrimary, fontSize: 12),
-        cursorColor: kAccent,
-        decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: const TextStyle(color: kTextMuted, fontSize: 11),
-          isDense: true,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          filled: true,
-          fillColor: kBg,
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-              borderSide: const BorderSide(color: kBorder)),
-          enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-              borderSide: const BorderSide(color: kBorder)),
-          focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-              borderSide: const BorderSide(color: kAccent, width: 1)),
-        ),
-      ),
-    ]);
-  }
-}
-
-class _InfoChip extends StatelessWidget {
-  final String label, value;
-  final bool? ok;
-  const _InfoChip({required this.label, required this.value, this.ok});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = ok == null
-        ? kTextMuted
-        : ok!
-            ? kSuccess
-            : kError;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-          border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(3)),
-      child: RichText(
-          text: TextSpan(children: [
-        TextSpan(
-            text: '$label ',
-            style: const TextStyle(
-                color: kTextMuted, fontSize: 9, letterSpacing: 0.4)),
-        TextSpan(
-            text: value,
-            style: TextStyle(
-                color: color,
-                fontSize: 9,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0.3)),
-      ])),
-    );
-  }
-}
-
-class _SheetBtn extends StatelessWidget {
-  final String label;
-  final bool enabled, accent;
+  final bool selected;
   final VoidCallback onTap;
-  const _SheetBtn(
-      {required this.label,
-      required this.enabled,
-      required this.onTap,
-      this.accent = false});
-
+  const _LangChip({required this.label, required this.selected, required this.onTap});
   @override
-  Widget build(BuildContext context) {
-    final fg = enabled ? (accent ? kBg : kTextSecondary) : kTextMuted;
-    final bg = accent && enabled ? kAccent : Colors.transparent;
-    final border =
-        enabled ? (accent ? kAccent : kBorder) : kBorder.withOpacity(0.4);
-    return GestureDetector(
-      onTap: enabled ? onTap : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        decoration: BoxDecoration(
-            color: bg,
-            border: Border.all(color: border),
-            borderRadius: BorderRadius.circular(4)),
-        child: Text(label,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: fg, fontSize: 10, letterSpacing: 0.8)),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => GestureDetector(onTap: onTap,
+    child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: selected ? kAccentDim : Colors.transparent,
+        border: Border.all(color: selected ? kAccent : kBorder), borderRadius: BorderRadius.circular(4)),
+      child: Text(label, style: TextStyle(color: selected ? kAccent : kTextSecondary, fontSize: 12, letterSpacing: 0.5))));
 }
 
-// ── Embedding Toast ───────────────────────────────────────────────────────────
 
-class _EmbeddingToast extends StatefulWidget {
-  final ToastMessage message;
-  final VoidCallback onDone;
-  const _EmbeddingToast({required this.message, required this.onDone});
-  @override
-  State<_EmbeddingToast> createState() => _EmbeddingToastState();
-}
 
-class _EmbeddingToastState extends State<_EmbeddingToast>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _opacity;
-  late final Animation<Offset> _slide;
 
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 280));
-    _opacity = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
-    _slide = Tween<Offset>(begin: const Offset(0, 0.3), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
-    _ctrl.forward();
-    Future.delayed(const Duration(milliseconds: 2400), () {
-      if (mounted) _ctrl.reverse().then((_) => widget.onDone());
-    });
-  }
 
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned(
-      bottom: 24,
-      right: 16,
-      child: FadeTransition(
-        opacity: _opacity,
-        child: SlideTransition(
-          position: _slide,
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                  color: kSurface,
-                  border: Border.all(color: kAccentDim, width: 1),
-                  borderRadius: BorderRadius.circular(4)),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text(widget.message.char,
-                      style: const TextStyle(
-                          color: kAccent,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w200,
-                          height: 1)),
-                  const SizedBox(height: 3),
-                  Text('#${widget.message.embeddingCount}',
-                      style: const TextStyle(
-                          color: kTextMuted, fontSize: 9, letterSpacing: 0.5)),
-                ]),
-                const SizedBox(width: 10),
-                Text(widget.message.statusLabel,
-                    style: TextStyle(
-                        color: widget.message.status == ToastStatus.dbError
-                            ? kError
-                            : widget.message.status == ToastStatus.savedFallback
-                                ? kTextSecondary
-                                : kSuccess,
-                        fontSize: 9,
-                        letterSpacing: 0.8)),
-              ]),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
+// ── End of Settings ──
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LAYOUT
@@ -934,7 +264,7 @@ class _Body extends StatelessWidget {
       Widget leftPane() {
         return Column(
           children: [
-            const _TopPanel(),
+            const _SearchBar(),
             const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
             const SizedBox(
               height: kTopInfoHeight,
@@ -956,14 +286,23 @@ class _Body extends StatelessWidget {
                       ),
                       Positioned(
                         top: canvasSize + 6 + 10,
-                        left: 0,
-                        right: 0,
-                        child: context.watch<AppState>().showRealtimeChips
-                            ? const SizedBox(
-                                height: kBottomInfoHeight,
-                                child: _BottomBar(),
-                              )
-                            : const SizedBox.shrink(),
+                        left: max(12.0, (c.maxWidth - canvasSize) / 2),
+                        right: max(12.0, (c.maxWidth - canvasSize) / 2),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: context.watch<AppState>().showRealtimeChips
+                                  ? const SizedBox(
+                                      height: kBottomInfoHeight,
+                                      child: _BottomBar(),
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                            const SizedBox(width: 12),
+                            const _CanvasControls(),
+                          ],
+                        ),
                       ),
                     ],
                   );
@@ -1018,21 +357,6 @@ class _MobileInfoBar extends StatelessWidget {
                     height: 1,
                   ),
                 ),
-                const SizedBox(width: 8),
-                FutureBuilder<int>(
-                  future: DbService.getEmbeddingCount(entry.vocabulary),
-                  builder: (ctx, snap) {
-                    final emb = snap.data ?? 0;
-                    return Text(
-                      'Emb $emb',
-                      style: TextStyle(
-                        color: emb > 0 ? kTextSecondary : kTextMuted,
-                        fontSize: 11,
-                        letterSpacing: 0.3,
-                      ),
-                    );
-                  },
-                ),
                 const Spacer(),
                 _SearchBtn(char: entry.vocabulary),
               ],
@@ -1050,17 +374,6 @@ class _MobileInfoBar extends StatelessWidget {
                 if (entry.levelCode != null) _MiniChip(entry.levelCode!),
                 if (entry.context != null) _MiniChip(entry.context!),
                 if (entry.partOfSpeech != null) _MiniChip(entry.partOfSpeech!),
-                _StatChip(
-                  label: 'Samples',
-                  value: '${state.localSampleCountForPinned}',
-                  highlight: state.localSampleCountForPinned > 0,
-                ),
-                if (state.pendingUploadCount > 0)
-                  _StatChip(
-                    label: 'pending',
-                    value: '${state.pendingUploadCount}',
-                    isWarning: state.pendingUploadCount > 50,
-                  ),
               ],
             ),
           ],
@@ -1073,7 +386,7 @@ class _MobileInfoBar extends StatelessWidget {
       final top = state.realtimeCandidates.first;
 
       return FutureBuilder<VocabEntry?>(
-        future: DbService.findExactByVocabulary(top.vocabulary),
+        future: DbService.findExactByVocabulary(top.text),
         builder: (ctx, snap) {
           final entry = snap.data;
 
@@ -1087,16 +400,16 @@ class _MobileInfoBar extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      top.vocabulary,
+                      top.text,
                       style: const TextStyle(
                         color: kAccent,
                         fontSize: 40,
                         fontWeight: FontWeight.w200,
                         height: 1,
-                      ),
-                    ),
+                  ),
+                ),
                     const Spacer(),
-                    _SearchBtn(char: top.vocabulary),
+                    _SearchBtn(char: top.text),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1113,13 +426,6 @@ class _MobileInfoBar extends StatelessWidget {
                     if (entry?.context != null) _MiniChip(entry!.context!),
                     if (entry?.partOfSpeech != null)
                       _MiniChip(entry!.partOfSpeech!),
-                    FutureBuilder<int>(
-                      future: DbService.getEmbeddingCount(top.vocabulary),
-                      builder: (ctx, embSnap) {
-                        final emb = embSnap.data ?? 0;
-                        return _MiniChip('Emb $emb');
-                      },
-                    ),
                   ],
                 ),
               ],
@@ -1132,116 +438,6 @@ class _MobileInfoBar extends StatelessWidget {
     return const SizedBox.expand();
   }
 }
-// ── Top panel ─────────────────────────────────────────────────────────────────
-
-class _TopPanel extends StatelessWidget {
-  const _TopPanel();
-  @override
-  Widget build(BuildContext context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const _SearchBar(),
-          const SizedBox(height: 1, child: ColoredBox(color: kBorder)),
-          _CanvasControls(),
-        ],
-      );
-}
-
-class _RealtimeTopBar extends StatelessWidget {
-  const _RealtimeTopBar();
-
-  @override
-  Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    final candidates = state.realtimeCandidates;
-    if (candidates.isEmpty) return const SizedBox.shrink();
-
-    final top = candidates.first;
-    final pct = (top.score * 100).round();
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: kBorder, width: 1)),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            // Các candidates còn lại — nay ở vị trí đầu tiên
-            ...candidates.skip(1).map((c) {
-              final p = (c.score * 100).round();
-              return Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: kBorder),
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                  child: RichText(
-                    text: TextSpan(children: [
-                      TextSpan(
-                        text: c.vocabulary,
-                        style: const TextStyle(
-                          color: kTextSecondary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w200,
-                          height: 1,
-                        ),
-                      ),
-                      TextSpan(
-                        text: ' $p%',
-                        style: const TextStyle(
-                          color: kTextMuted,
-                          fontSize: 9,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                    ]),
-                  ),
-                ),
-              );
-            }),
-            // Top match — nay ở vị trí cuối, dạng chip nhỏ đồng bộ
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                border: Border.all(color: kAccent.withOpacity(0.4)),
-                borderRadius: BorderRadius.circular(3),
-              ),
-              child: RichText(
-                text: TextSpan(children: [
-                  TextSpan(
-                    text: top.vocabulary,
-                    style: const TextStyle(
-                      color: kAccent,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w200,
-                      height: 1,
-                    ),
-                  ),
-                  TextSpan(
-                    text: ' $pct%',
-                    style: const TextStyle(
-                      color: kTextSecondary,
-                      fontSize: 9,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ]),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-// ── Bottom bar (fixed height, below canvas) ───────────────────────────────────
-
 class _BottomBar extends StatelessWidget {
   const _BottomBar();
 
@@ -1251,14 +447,14 @@ class _BottomBar extends StatelessWidget {
     final candidates = state.realtimeCandidates;
 
     if (candidates.isEmpty) {
-      return const SizedBox.expand();
+      return const SizedBox.shrink();
     }
 
     return Align(
-      alignment: Alignment.topLeft,
+      alignment: Alignment.centerLeft,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+        padding: EdgeInsets.zero,
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
@@ -1269,14 +465,9 @@ class _BottomBar extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: candidates.skip(1).map((c) {
-                    final isSimilar =
-                        (candidates.first.score - c.score) <= 0.08;
                     return Padding(
                       padding: const EdgeInsets.only(right: 6),
-                      child: _CandidateChip(
-                        candidate: c,
-                        isSimilar: isSimilar,
-                      ),
+                      child: _CandidateChip(candidate: c),
                     );
                   }).toList(),
                 ),
@@ -1289,174 +480,45 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
-// ── Realtime Prediction Panel ─────────────────────────────────────────────────
-
-class _RealtimePredictionPanel extends StatelessWidget {
-  const _RealtimePredictionPanel();
-
-  @override
-  Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    final candidates = state.realtimeCandidates;
-    final hasStrokes = state.canvas.hasStrokes;
-
-    if (!hasStrokes && candidates.isEmpty) return const SizedBox.shrink();
-
-    String emptyMsg;
-    switch (state.realtimeSource) {
-      case 'model_no_prototypes':
-        emptyMsg = 'Model loaded · no local prototypes yet';
-        break;
-      case 'proto':
-        emptyMsg = '';
-        break;
-      default:
-        emptyMsg = 'No local prototypes';
-    }
-
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 32),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: kBorder, width: 1)),
-      ),
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      child: candidates.isEmpty
-          ? Text(emptyMsg,
-              style: const TextStyle(
-                  color: kTextMuted, fontSize: 9, letterSpacing: 0.8))
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                _BestMatchGlyph(candidate: candidates.first),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: candidates.skip(1).map((c) {
-                        final isSimilar =
-                            (candidates.first.score - c.score) <= 0.08;
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: _CandidateChip(
-                              candidate: c, isSimilar: isSimilar),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-}
-
 class _BestMatchGlyph extends StatelessWidget {
-  final ProtoMatchCandidate candidate;
+  final RealtimeCandidate candidate;
   const _BestMatchGlyph({required this.candidate});
 
   @override
   Widget build(BuildContext context) {
-    final pct = (candidate.score * 100).round();
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.baseline,
-      textBaseline: TextBaseline.alphabetic,
-      children: [
-        Text(
-          candidate.vocabulary,
-          style: const TextStyle(
-            color: kAccent,
-            fontSize: 26,
-            fontWeight: FontWeight.w200,
-            height: 1,
-          ),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          '$pct%',
-          style: const TextStyle(
-            color: kTextSecondary,
-            fontSize: 9,
-            letterSpacing: 0.4,
-          ),
-        ),
-      ],
+    return Text(
+      candidate.text,
+      style: const TextStyle(
+        color: kAccent,
+        fontSize: 26,
+        fontWeight: FontWeight.w200,
+        height: 1,
+      ),
     );
   }
 }
 
 class _CandidateChip extends StatelessWidget {
-  final ProtoMatchCandidate candidate;
-  final bool isSimilar;
-  const _CandidateChip({required this.candidate, required this.isSimilar});
+  final RealtimeCandidate candidate;
+  const _CandidateChip({required this.candidate});
 
   @override
   Widget build(BuildContext context) {
-    final pct = (candidate.score * 100).round();
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        border: Border.all(
-          color: isSimilar ? kAccent.withOpacity(0.35) : kBorder,
-        ),
+        border: Border.all(color: kBorder),
         borderRadius: BorderRadius.circular(3),
       ),
-      child: RichText(
-        text: TextSpan(children: [
-          TextSpan(
-            text: candidate.vocabulary,
-            style: TextStyle(
-              color: isSimilar ? kAccent : kTextSecondary,
-              fontSize: 14,
-              fontWeight: FontWeight.w200,
-              height: 1,
-            ),
-          ),
-          TextSpan(
-            text: ' $pct',
-            style: const TextStyle(
-              color: kTextMuted,
-              fontSize: 8,
-              letterSpacing: 0.3,
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-// ── Sample bar (only when pinned) ─────────────────────────────────────────────
-
-class _SampleBar extends StatelessWidget {
-  const _SampleBar();
-
-  @override
-  Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    if (state.pinnedEntry == null) return const SizedBox.shrink();
-
-    return Container(
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: kBorder, width: 1)),
-      ),
-      padding: const EdgeInsets.fromLTRB(12, 5, 12, 6),
-      child: Row(children: [
-        _StatChip(
-          label: 'Samples',
-          value: '${state.localSampleCountForPinned}',
-          highlight: state.localSampleCountForPinned > 0,
+      child: Text(
+        candidate.text,
+        style: const TextStyle(
+          color: kTextSecondary,
+          fontSize: 14,
+          fontWeight: FontWeight.w200,
+          height: 1,
         ),
-        const SizedBox(width: 6),
-        if (state.pendingUploadCount > 0)
-          _StatChip(
-            label: 'pending',
-            value: '${state.pendingUploadCount}',
-            isWarning: state.pendingUploadCount > 50,
-          ),
-        const Spacer(),
-      ]),
+      ),
     );
   }
 }
@@ -1496,8 +558,8 @@ class _DrawCanvas extends StatelessWidget {
                 state.canvas,
                 state.pinnedEntry?.vocabulary,
                 state.strokeWidth,
-                state.showPinnedTemplate,
                 state.accentColor,
+                state.alwaysShowTemplate,
               ),
             ),
           ),
@@ -1511,11 +573,11 @@ class _CanvasPainter extends CustomPainter {
   final CanvasData canvas;
   final String? hint;
   final double strokeWidth;
-  final bool showPinnedTemplate;
   final Color accentColor;
+  final bool alwaysShowTemplate;
 
-  _CanvasPainter(this.canvas, this.hint, this.strokeWidth,
-      this.showPinnedTemplate, this.accentColor);
+  _CanvasPainter(this.canvas, this.hint, this.strokeWidth, this.accentColor,
+      this.alwaysShowTemplate);
 
   @override
   void paint(Canvas c, Size sz) {
@@ -1540,13 +602,12 @@ class _CanvasPainter extends CustomPainter {
         ..strokeWidth = 1,
     );
 
-    if (hint != null && (showPinnedTemplate || !canvas.hasStrokes)) {
+    if (hint != null && (alwaysShowTemplate || !canvas.hasStrokes)) {
       final tp = TextPainter(
         text: TextSpan(
             text: hint,
             style: TextStyle(
-                color:
-                    accentColor.withOpacity(showPinnedTemplate ? 0.18 : 0.12),
+                color: accentColor.withOpacity(0.12),
                 fontSize: sz.width * 0.55,
                 fontWeight: FontWeight.w200,
                 height: 1)),
@@ -1587,118 +648,32 @@ class _CanvasPainter extends CustomPainter {
       old.canvas != canvas ||
       old.hint != hint ||
       old.strokeWidth != strokeWidth ||
-      old.showPinnedTemplate != showPinnedTemplate ||
-      old.accentColor != accentColor;
+      old.accentColor != accentColor ||
+      old.alwaysShowTemplate != alwaysShowTemplate;
 }
 
 // ── Canvas Controls ───────────────────────────────────────────────────────────
 
 class _CanvasControls extends StatelessWidget {
+  const _CanvasControls();
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final isPinned = state.pinnedEntry != null;
-    final clearLabel = isPinned ? 'Save+Clear' : 'Clear';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-      child: Row(children: [
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
         _Btn(
             label: 'Undo',
             enabled: state.canvas.canUndo,
             onTap: () => context.read<AppState>().undo()),
         const SizedBox(width: 6),
         _Btn(
-          label: state.busy ? '…' : clearLabel,
-          enabled: state.canvas.hasStrokes && !state.busy,
-          accent: isPinned,
-          onTap: () async {
-            if (isPinned) {
-              final ok = await context.read<AppState>().saveAndClearPinned();
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(ok ? 'Sample saved' : 'Save failed',
-                    style:
-                        TextStyle(color: ok ? kSuccess : kError, fontSize: 11)),
-                backgroundColor: kSurface,
-                duration: const Duration(milliseconds: 1400),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              ));
-            } else {
-              context.read<AppState>().clear();
-            }
-          },
+          label: 'Clear',
+          enabled: state.canvas.hasStrokes,
+          onTap: () => context.read<AppState>().clear(),
         ),
-        const SizedBox(width: 6),
-        _Btn(
-          label: state.showPinnedTemplate ? 'Template ●' : 'Template',
-          enabled: state.pinnedEntry != null,
-          onTap: () => context.read<AppState>().togglePinnedTemplate(),
-        ),
-      ]),
-    );
-  }
-}
-
-// ── Stat chip ─────────────────────────────────────────────────────────────────
-
-class _StatChip extends StatelessWidget {
-  final String label, value;
-  final bool highlight, isWarning;
-  const _StatChip(
-      {required this.label,
-      required this.value,
-      this.highlight = false,
-      this.isWarning = false});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = isWarning
-        ? kError
-        : highlight
-            ? kSuccess
-            : kTextMuted;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-          border: Border.all(color: kBorder),
-          borderRadius: BorderRadius.circular(3)),
-      child: RichText(
-          text: TextSpan(children: [
-        TextSpan(
-            text: '$label ',
-            style: const TextStyle(
-                color: kTextMuted, fontSize: 9, letterSpacing: 0.5)),
-        TextSpan(
-            text: value,
-            style: TextStyle(
-                color: color,
-                fontSize: 9,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0.5)),
-      ])),
-    );
-  }
-}
-
-class _SimilarityBadge extends StatelessWidget {
-  final SimilarityResult result;
-  const _SimilarityBadge({required this.result});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = result.isConsistent
-        ? kSuccess
-        : result.isGood
-            ? kAccent
-            : kError;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-          border: Border.all(color: color.withOpacity(0.4)),
-          borderRadius: BorderRadius.circular(3)),
-      child: Text(result.feedback,
-          style: TextStyle(color: color, fontSize: 9, letterSpacing: 0.3)),
+      ],
     );
   }
 }
@@ -1878,21 +853,6 @@ class _InfoArea extends StatelessWidget {
           _SearchBtn(char: entry.vocabulary),
           const SizedBox(height: 10),
           const Divider(color: kBorder, height: 1),
-          const SizedBox(height: 8),
-          Wrap(spacing: 6, runSpacing: 4, children: [
-            FutureBuilder<int>(
-              future: DbService.getEmbeddingCount(entry.vocabulary),
-              builder: (ctx, snap) => _StatChip(
-                label: 'Embeddings',
-                value: '${snap.data ?? 0}',
-                highlight: (snap.data ?? 0) >= 10,
-              ),
-            ),
-          ]),
-          if (state.similarityResult != null) ...[
-            const SizedBox(height: 6),
-            _SimilarityBadge(result: state.similarityResult!),
-          ],
         ]),
       );
     }
@@ -1904,22 +864,15 @@ class _InfoArea extends StatelessWidget {
 }
 
 class _TopCandidateChips extends StatelessWidget {
-  final List<ProtoMatchCandidate> candidates;
+  final List<RealtimeCandidate> candidates;
   const _TopCandidateChips({required this.candidates});
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: candidates.take(4).map((c) {
-        final pct = (c.score * 100).round();
         final isTop = c == candidates.first;
-        final color = isTop
-            ? (pct >= 80
-                ? kSuccess
-                : pct >= 60
-                    ? kAccent
-                    : kTextSecondary)
-            : kTextMuted;
+        final color = isTop ? kAccent : kTextMuted;
         return Padding(
           padding: const EdgeInsets.only(right: 6),
           child: Container(
@@ -1928,21 +881,13 @@ class _TopCandidateChips extends StatelessWidget {
                 border:
                     Border.all(color: isTop ? color.withOpacity(0.5) : kBorder),
                 borderRadius: BorderRadius.circular(3)),
-            child: RichText(
-                text: TextSpan(children: [
-              TextSpan(
-                  text: c.vocabulary,
-                  style: TextStyle(
-                      color: isTop ? color : kTextMuted,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w200)),
-              TextSpan(
-                  text: ' $pct%',
-                  style: TextStyle(
-                      color: isTop ? color : kTextMuted,
-                      fontSize: 9,
-                      letterSpacing: 0.3)),
-            ])),
+            child: Text(
+              c.text,
+              style: TextStyle(
+                  color: isTop ? color : kTextMuted,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w200),
+            ),
           ),
         );
       }).toList(),
@@ -1986,11 +931,10 @@ class _ResultArea extends StatelessWidget {
 
 class _EntryCard extends StatelessWidget {
   final VocabEntry entry;
-  final bool showStrokeOrder, showEmbeddingCount;
+  final bool showStrokeOrder;
   const _EntryCard(
       {required this.entry,
-      this.showStrokeOrder = false,
-      this.showEmbeddingCount = false});
+      this.showStrokeOrder = false});
 
   @override
   Widget build(BuildContext context) {
@@ -2005,8 +949,6 @@ class _EntryCard extends StatelessWidget {
                     fontSize: 48,
                     fontWeight: FontWeight.w200,
                     height: 1)),
-            if (showEmbeddingCount)
-              _EmbeddingCountBadge(vocabulary: entry.vocabulary),
           ]),
           const SizedBox(width: 14),
           Expanded(
@@ -2043,47 +985,6 @@ class _EntryCard extends StatelessWidget {
         const SizedBox(height: 4),
         const Divider(color: kBorder, height: 1),
       ]),
-    );
-  }
-}
-
-// ── Embedding Count Badge ─────────────────────────────────────────────────────
-
-class _EmbeddingCountBadge extends StatelessWidget {
-  final String vocabulary;
-  const _EmbeddingCountBadge({required this.vocabulary});
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<int>(
-      future: DbService.getEmbeddingCount(vocabulary),
-      builder: (ctx, snap) {
-        final count = snap.data ?? 0;
-        return Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              border: Border.all(color: count > 0 ? kAccentDim : kBorder),
-              borderRadius: BorderRadius.circular(3),
-            ),
-            child: RichText(
-                text: TextSpan(children: [
-              TextSpan(
-                  text: 'Emb ',
-                  style: const TextStyle(
-                      color: kTextMuted, fontSize: 8, letterSpacing: 0.5)),
-              TextSpan(
-                  text: '$count',
-                  style: TextStyle(
-                      color: count > 0 ? kAccent : kTextMuted,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3)),
-            ])),
-          ),
-        );
-      },
     );
   }
 }
